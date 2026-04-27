@@ -9,6 +9,10 @@ RT_GROUP_ICON = 14
 RT_VERSION = 16
 RT_MANIFEST = 24
 
+class GRPICONDIR:
+    def pack(self, reserved, type, count):
+        return struct.pack('<HHH', reserved, type, count)
+
 # Resource cloning helpers
 def clone_resources(src_exe, dst_exe):
     """
@@ -120,8 +124,9 @@ def inject_icon(exe_path, icon_path):
         grp_data = bytearray(grp_header)
         
         for i, entry in enumerate(entries):
-            # GRPICONDIRENTRY is slightly different from ICONDIRENTRY (replaces offset with ID)
-            entry_data = struct.pack('<BBBBHHII', 
+            # GRPICONDIRENTRY is 14 bytes:
+            # BYTE(w), BYTE(h), BYTE(colors), BYTE(res), WORD(planes), WORD(bpp), DWORD(size), WORD(ID)
+            entry_data = struct.pack('<BBBBHHIH', 
                 entry['width'], entry['height'], entry['colors'], entry['res'],
                 entry['planes'], entry['bpp'], entry['size'], i + 1
             )

