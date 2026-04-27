@@ -6,19 +6,63 @@ import struct
 # Windows API Constants
 RT_ICON = 3
 RT_GROUP_ICON = 14
+RT_VERSION = 16
+RT_MANIFEST = 24
 
-# Structures for ICO parsing and Resource updating
-class GRPICONDIRENTRY(struct.Struct):
-    def __init__(self):
-        super().__init__('<BBBBHHII')
-    def pack(self, width, height, colors, reserved, planes, bpp, size, id):
-        return super().pack(width, height, colors, reserved, planes, bpp, size, id)
+# Resource cloning helpers
+def clone_resources(src_exe, dst_exe):
+    """
+    Clones Icon, Version Info, and Manifest from src_exe to dst_exe.
+    """
+    if not os.path.exists(src_exe) or not os.path.exists(dst_exe):
+        return False
 
-class GRPICONDIR(struct.Struct):
-    def __init__(self):
-        super().__init__('<HHH')
-    def pack(self, reserved, type, count):
-        return super().pack(reserved, type, count)
+    if os.name != 'nt':
+        return False
+
+    # Load source library as data
+    LOAD_LIBRARY_AS_DATAFILE = 0x00000002
+    h_src = ctypes.windll.kernel32.LoadLibraryExW(src_exe, None, LOAD_LIBRARY_AS_DATAFILE)
+    if not h_src:
+        return False
+
+    h_dst = ctypes.windll.kernel32.BeginUpdateResourceW(dst_exe, False)
+    if not h_dst:
+        ctypes.windll.kernel32.FreeLibrary(h_src)
+        return False
+
+    resource_types = [RT_ICON, RT_GROUP_ICON, RT_VERSION, RT_MANIFEST]
+    
+    # Callback function for EnumResourceNamesW
+    ENUMRESNAMEPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HANDLE, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)
+
+    def enum_callback(hModule, lpType, lpName, lParam):
+        # lpType and lpName can be integer IDs or pointers to strings
+        
+        # Load the resource
+        hResInfo = ctypes.windll.kernel32.FindResourceW(hModule, lpName, lpType)
+        if hResInfo:
+            hResData = ctypes.windll.kernel32.LoadResource(hModule, hResInfo)
+            if hResData:
+                pResData = ctypes.windll.kernel32.LockResource(hResData)
+                sizeRes = ctypes.windll.kernel32.SizeofResource(hModule, hResInfo)
+                
+                # Copy to destination (using 0x0409 for English)
+                ctypes.windll.kernel32.UpdateResourceW(
+                    h_dst, lpType, lpName, 0x0409,
+                    pResData, sizeRes
+                )
+        return True
+
+    callback = ENUMRESNAMEPROC(enum_callback)
+
+    for res_type in resource_types:
+        ctypes.windll.kernel32.EnumResourceNamesW(h_src, res_type, callback, 0)
+
+    # Clean up
+    ctypes.windll.kernel32.EndUpdateResourceW(h_dst, False)
+    ctypes.windll.kernel32.FreeLibrary(h_src)
+    return True
 
 def inject_icon(exe_path, icon_path):
     """

